@@ -1,0 +1,26 @@
+node_modules/
+out/
+dist/
+.eslintcache
+*.log
+*.local
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+.test-artifacts/
+test-results/
+playwright-report/
+
+# Private workspace and release verification output
+.test-artifacts/
+playwright-report/
+test-results/
+*.log
+.env
+.env.*
+!.env.example
+agent.json
+workspace.json

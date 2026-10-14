@@ -1,0 +1,58 @@
+{
+  "name": "loom",
+  "version": "0.1.0-beta.2",
+  "private": true,
+  "description": "Loom — local novel writing workspace",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "package:win": "node scripts/release/generate-notices.mjs && npm run build && electron-builder --config electron-builder.json --win nsis --x64 --publish never && node scripts/release/collect-artifacts.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "vue-tsc --noEmit",
+    "test:e2e": "playwright test",
+    "verify": "npm run typecheck && npm run lint && npm test && npm run build && npm run test:e2e",
+    "perf:fixtures": "node --import tsx scripts/perf/generate-fixtures.ts",
+    "perf:measure": "node --import tsx scripts/perf/measure.ts",
+    "perf:typecheck": "tsc -p scripts/perf/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@electron-toolkit/eslint-config": "2.1.0",
+    "@electron-toolkit/eslint-config-prettier": "3.0.0",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.6.3",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "8.46.1",
+    "@vitejs/plugin-vue": "5.2.4",
+    "electron": "39.2.7",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "eslint": "9.37.0",
+    "eslint-plugin-vue": "10.5.1",
+    "prettier": "3.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "5.9.3",
+    "vite": "6.4.0",
+    "vue": "3.5.22",
+    "vue-tsc": "^3.3.11"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lemonwhitele-maker/loom.git"
+  },
+  "homepage": "https://github.com/lemonwhitele-maker/loom",
+  "bugs": {
+    "url": "https://github.com/lemonwhitele-maker/loom/issues"
+  }
+}
