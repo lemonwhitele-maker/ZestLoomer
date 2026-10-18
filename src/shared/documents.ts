@@ -2,14 +2,22 @@ import type { AgentAPI } from './agent'
 import type { WorkspaceAPI } from './workspace'
 import type { ImportAPI } from './imports'
 import type { ToolAPI } from './toolApi'
-export const kinds = ['chapters', 'notes', 'characters', 'settings', 'outlines'] as const
+export const kinds = [
+  'chapters',
+  'notes',
+  'characters',
+  'settings',
+  'outlines',
+  'foreshadows'
+] as const
 export type DocumentKind = (typeof kinds)[number]
 export const labels: Record<DocumentKind, string> = {
   chapters: '正文',
   notes: '速记',
   characters: '人物',
   settings: '设定',
-  outlines: '大纲'
+  outlines: '大纲',
+  foreshadows: '伏笔'
 }
 export interface Book {
   id: string
@@ -64,8 +72,16 @@ export interface SaveInput {
   title: string
   expectedVersion: string
 }
-export type Result<T> = { ok: true; value: T } | { ok: false; code: string; message: string }
+export type Result<T> =
+  | { ok: true; value: T }
+  | {
+      ok: false
+      code: string
+      message: string
+      binding?: import('./storyLinks').ChapterOutlinePair
+    }
 export interface LoomAPI {
+  story: import('./storyLinks').StoryAPI
   tools: ToolAPI
   agent: AgentAPI
   workspace: WorkspaceAPI
@@ -80,6 +96,7 @@ export interface LoomAPI {
     }>
   >
   createBook(title: string): Promise<Result<Book | null>>
+  renameBook(bookId: string, title: string): Promise<Result<Book>>
   openBook(): Promise<Result<Book | null>>
   list(bookId: string): Promise<Result<DocumentMeta[]>>
   create(

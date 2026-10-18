@@ -6,7 +6,8 @@ const kinds = {
   characters: 'character',
   settings: 'setting',
   outlines: 'outline',
-  notes: 'note'
+  notes: 'note',
+  foreshadows: 'foreshadow'
 }
 const path = (doc: DocumentSnapshot) =>
   `book/${doc.kind}/${doc.id}.${doc.kind === 'chapters' ? 'txt' : 'md'}`
@@ -29,7 +30,7 @@ export function relatedContext(documents: DocumentSnapshot[], targetId: string, 
       new Set(
         [
           ...d.content.matchAll(
-            /\[\[(chapter|character|setting|outline|note):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
+            /\[\[(chapter|character|setting|outline|note|foreshadow):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
           )
         ].map((m) => `${m[1]}:${m[2]}`)
       )

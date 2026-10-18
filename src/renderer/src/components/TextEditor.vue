@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { sourceOffset } from '../editorSource'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ChangeSet, Compartment, EditorState, Text } from '@codemirror/state'
 import { EditorView, drawSelection, keymap } from '@codemirror/view'
@@ -312,7 +313,7 @@ function mountSession(): void {
           if (pos === null) return false
           const line = target.state.doc.lineAt(pos)
           const pattern =
-            /\[\[(?:chapter|character|setting|outline|note):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
+            /\[\[(?:chapter|character|setting|outline|note|foreshadow):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
           for (const match of line.text.matchAll(pattern)) {
             const start = line.from + match.index!
             if (pos >= start && pos <= start + match[0].length) {
@@ -501,6 +502,10 @@ defineExpose({
     return {
       documentId: props.session.document.id,
       savedVersion: props.session.document.version,
+      editorContent: props.session.content,
+      cursor: view
+        ? sourceOffset(props.session.content, view.state.selection.main.head)
+        : undefined,
       selection: view ? agentSelection(view.state, props.session.content) : undefined
     }
   },

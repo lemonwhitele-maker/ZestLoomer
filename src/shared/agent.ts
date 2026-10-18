@@ -1,3 +1,4 @@
+import type { BindingDependency } from './storyLinks'
 import type { DocumentKind, DocumentSnapshot, Result } from './documents'
 
 export type ToolName = 'list_files' | 'read' | 'create' | 'write' | 'edit'
@@ -8,6 +9,9 @@ export interface SourceRef {
   kind: DocumentKind
 }
 export interface AgentWorkspace {
+  cursor?: number
+  editorContent?: string
+  heavySnapshot?: import('./heavyAgent').HeavyTurnSnapshot
   targetRewrite?: boolean
   documentId?: string
   savedVersion?: string
@@ -101,6 +105,7 @@ export interface AgentDiagnostic {
   }
 }
 export interface Conversation {
+  heavySettings?: import('./heavyAgent').HeavyAgentSettings
   format: 1
   id: string
   bookId: string
@@ -133,6 +138,7 @@ export type ProposalState =
   | 'failed'
   | 'undone'
 export interface Proposal {
+  bindingDependencies?: BindingDependency[]
   format: 1
   id: string
   bookId: string
@@ -204,6 +210,10 @@ export interface AgentSnapshot {
   warnings?: string[]
 }
 export interface AgentAPI {
+  heavySettings(): Promise<Result<import('./heavyAgent').HeavySettingsView>>
+  saveHeavySettings(
+    settings: import('./heavyAgent').HeavyAgentSettings
+  ): Promise<Result<import('./heavyAgent').HeavySettingsView>>
   exportLog(bookId: string, id: string): Promise<Result<{ path: string; complete: boolean } | null>>
   bind(bookId: string): Promise<Result<AgentSnapshot>>
   snapshot(bookId: string): Promise<Result<AgentSnapshot>>

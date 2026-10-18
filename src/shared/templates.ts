@@ -7,6 +7,8 @@ export const templates = {
   settings: '### 定义\n\n### 规则与边界\n\n### 具体内容与记录\n'
 } as const
 export function initialContent(kind: DocumentKind, choice: TemplateChoice): string {
+  if (kind === 'foreshadows')
+    return JSON.stringify({ content: '', startChapterId: null, endChapterId: null }, null, 2) + '\n'
   return choice === 'basic' && (kind === 'characters' || kind === 'settings') ? templates[kind] : ''
 }
 

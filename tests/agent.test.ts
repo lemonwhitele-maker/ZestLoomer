@@ -88,9 +88,13 @@ test('proposal edits preserve surrounding CRLF and normalize only inserted line 
               'edit',
               {
                 path: documentPath(d),
+                baseVersion: d.version,
                 edits: [
                   {
-                    ...(selected ? {} : { oldText: '待修改' }),
+                    mode: 'replace',
+                    target: selected
+                      ? { kind: 'selection' }
+                      : { kind: 'lines', startLine: 3, endLine: 3 },
                     newText: '新段/n/n续段\r末段'
                   }
                 ]
@@ -207,10 +211,9 @@ test('read coverage excludes summaries, missing middle pages, stale cursors and 
   await adapter.read({ path: 'book/', query: '甲', maxChars: 500 })
   assert.equal(adapter.reads.size, 0)
   const first: any = await adapter.read({ path, maxChars: 500 })
-  const second: any = await adapter.read({ cursor: first.nextCursor, maxChars: 500 })
-  const third: any = await adapter.read({ cursor: second.nextCursor, maxChars: 500 })
-  const fourth: any = await adapter.read({ cursor: third.nextCursor, maxChars: 500 })
-  assert.equal(fourth.complete, true)
+  let page = first
+  while (page.nextCursor) page = await adapter.read({ cursor: page.nextCursor, maxChars: 500 })
+  assert.equal(page.complete, true)
   await store.save({
     bookId: book.id,
     id: d.id,
@@ -220,7 +223,7 @@ test('read coverage excludes summaries, missing middle pages, stale cursors and 
   })
   await assert.rejects(adapter.read({ cursor: first.nextCursor, maxChars: 500 }), /文档变化/)
   const batch: any = await adapter.read({ paths: [path, 'C:/secret'], maxChars: 1000 })
-  assert.equal(batch.items[0].text, '新版本')
+  assert.equal(batch.items[0].lines[0].text, '新版本')
   assert.ok(batch.items[1].error)
   const fresh = (await store.read(book.id, d.id)).document
   await store.trash(book.id, d.id, fresh.version)
@@ -239,7 +242,8 @@ test('read ranges merge without treating the final page alone as a full read', a
   const first: any = await a.read({ path: documentPath(d), maxChars: 500 })
   const middle: any = await a.read({ cursor: first.nextCursor, maxChars: 500 })
   a.reads.get(d.id)!.ranges = [{ start: 0, end: 500 }]
-  const final: any = await a.read({ cursor: middle.nextCursor, maxChars: 500 })
+  let final: any = middle
+  while (final.nextCursor) final = await a.read({ cursor: final.nextCursor, maxChars: 500 })
   assert.equal(final.complete, false)
   assert.equal(a.covers(d.id, 0, 1500), false)
 })
@@ -289,7 +293,17 @@ async function editProposal(store: DocumentStore, bookId: string, d: DocumentSna
     step === 0
       ? call('read', { path: documentPath(d) })
       : step === 1
-        ? call('edit', { path: documentPath(d), edits: [{ oldText: '旧句子', newText: '新句子' }] })
+        ? call('edit', {
+            path: documentPath(d),
+            baseVersion: d.version,
+            edits: [
+              {
+                mode: 'replace',
+                target: { kind: 'lines', startLine: 1, endLine: 1 },
+                newText: '新句子'
+              }
+            ]
+          })
         : done
   )
   const service = new AgentService(store, () => runtime),
@@ -366,7 +380,11 @@ test('selection never edits outside frozen bounds and later manual edits prevent
     step === 0
       ? call('read', { path: documentPath(d) })
       : step === 1
-        ? call('edit', { path: documentPath(d), edits: [{ newText: '新句子' }] })
+        ? call('edit', {
+            path: documentPath(d),
+            baseVersion: d.version,
+            edits: [{ mode: 'replace', target: { kind: 'selection' }, newText: '新句子' }]
+          })
         : done
   )
   const service = new AgentService(store, () => runtime),
@@ -407,7 +425,7 @@ test('whole write and ambiguous edits are rejected before any proposal exists', 
         edits: [{ oldText: '旧句子', newText: '不能改' }]
       })
     }
-    assert.equal(JSON.parse(messages.at(-1)!.content!).code, 'MATCH')
+    assert.equal(JSON.parse(messages.at(-1)!.content!).code, 'ARGUMENT')
     return { text: '需要补读并缩小修改范围。', calls: [] }
   })
   const service = new AgentService(store, () => runtime),

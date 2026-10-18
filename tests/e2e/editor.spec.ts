@@ -18,7 +18,8 @@ async function launch(rendererUrl?: string): Promise<void> {
       (entry): entry is [string, string] => typeof entry[1] === 'string'
     )
   )
-  env.LOOM_USER_DATA = profile
+  env.LOOM_PREVIEW_USER_DATA = profile
+  env.LOOM_PREVIEW_BOOKLIST = root
   env.LOOM_TEST_HIDDEN = '1'
   env.LOOM_PERF = '1'
   delete env.ELECTRON_RUN_AS_NODE
@@ -150,7 +151,7 @@ test('templates and Agent API flow preserve source notes, require review, surviv
     await page.getByRole('button', { name: '保存 Agent 配置' }).click()
     await expect(page.locator('.settings-footer [role="status"]')).toContainText('Agent 配置已保存')
     await page.getByRole('button', { name: '关闭', exact: true }).click()
-    const savedConfig = JSON.parse(await fs.readFile(join(profile, 'agent.json'), 'utf8'))
+    const savedConfig = JSON.parse(await fs.readFile(join(root, '.loom', 'agent.json'), 'utf8'))
     expect(savedConfig.profiles[0].encryptedKey).toBeTruthy()
     expect(JSON.stringify(savedConfig)).not.toContain('synthetic-local-test-key')
     const publicConfig = await page.evaluate(() => window.loom.agent.config())
@@ -424,7 +425,21 @@ test('proposal apply and undo preserve reading position and settings merge parag
                   function: {
                     name: count === 0 ? 'read' : 'edit',
                     arguments: JSON.stringify(
-                      count === 0 ? { path } : { path, edits: [{ oldText, newText }] }
+                      count === 0
+                        ? { path, startLine: 201, endLine: 205 }
+                        : {
+                            path,
+                            baseVersion: JSON.parse(
+                              payload.messages.filter((m: any) => m.role === 'tool').at(-1).content
+                            ).version,
+                            edits: [
+                              {
+                                mode: 'replace',
+                                target: { kind: 'lines', startLine: 201, endLine: 205 },
+                                newText
+                              }
+                            ]
+                          }
                     )
                   }
                 }
@@ -474,6 +489,81 @@ test('proposal apply and undo preserve reading position and settings merge parag
   }
 })
 
+test('line-protocol continuation previews real separators and waits for review before apply and undo', async () => {
+  await newDocument('行号续写验收')
+  const source = '他推开门，屋内没有人。'
+  await enterText(source)
+  const chapter = (await docs()).find((doc) => doc.title === '行号续写验收')!
+  const path = `book/chapters/${chapter.id}.txt`
+  const server = createHttpServer(async (request, response) => {
+    let raw = ''
+    for await (const chunk of request) raw += chunk
+    const payload = JSON.parse(raw)
+    const results = payload.messages.filter((message: any) => message.role === 'tool')
+    const count = results.length
+    const read = count ? JSON.parse(results[0].content) : undefined
+    const choice =
+      count < 2
+        ? {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `continue-${count}`,
+                  function: {
+                    name: count ? 'edit' : 'read',
+                    arguments: JSON.stringify(
+                      count
+                        ? {
+                            path,
+                            baseVersion: read.version,
+                            edits: [
+                              {
+                                mode: 'insert',
+                                target: { kind: 'document_end' },
+                                newText: '窗外忽然传来脚步声。'
+                              }
+                            ]
+                          }
+                        : { path }
+                    )
+                  }
+                }
+              ]
+            },
+            finish_reason: 'tool_calls'
+          }
+        : { delta: { content: '文末续写已准备，请审阅。' }, finish_reason: 'stop' }
+    response.setHeader('Content-Type', 'text/event-stream')
+    response.end('data: ' + JSON.stringify({ choices: [choice] }) + '\n\ndata: [DONE]\n\n')
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await configureSelectionAgent((server.address() as { port: number }).port)
+    await page
+      .getByRole('textbox', { name: '给 Agent 的消息' })
+      .fill('在这一章末尾续写一句，保留前文。')
+    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(page.getByRole('button', { name: '接受修改', exact: true })).toBeEnabled()
+    expect((await disk(chapter.id)).content).toBe(source)
+    expect(await page.locator('.diff-before').textContent()).toBe(source)
+    expect(await page.locator('.diff-after').textContent()).toBe(source + '\n窗外忽然传来脚步声。')
+    await expect(page.locator('.diff-after .diff-newline')).toHaveCount(1)
+    await page
+      .locator('.proposal-card')
+      .screenshot({ path: resolve('.test-artifacts/loom-026-continuation-preview.png') })
+    await page.getByRole('button', { name: '接受修改', exact: true }).click()
+    await expect(page.getByRole('button', { name: '撤销这次修改' })).toBeEnabled()
+    expect((await disk(chapter.id)).content).toBe(source + '\n窗外忽然传来脚步声。')
+    await page.getByRole('button', { name: '撤销这次修改' }).click()
+    await expect(page.locator('.proposal-card')).toContainText('已撤销')
+    expect((await disk(chapter.id)).content).toBe(source)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 test('reviewing one of two document proposals preserves the other preview and review position', async () => {
   const chapters: DocumentMeta[] = []
   for (const title of ['甲提案', '乙提案']) {
@@ -503,9 +593,13 @@ test('reviewing one of two document proposals preserves the other preview and re
                         ? { path }
                         : {
                             path,
+                            baseVersion: JSON.parse(
+                              payload.messages.filter((m: any) => m.role === 'tool').at(-1).content
+                            ).version,
                             edits: [
                               {
-                                oldText: `${chapter.title}原文。`,
+                                mode: 'replace',
+                                target: { kind: 'lines', startLine: 1, endLine: 1 },
                                 newText: `${chapter.title}修改后。`
                               }
                             ]
@@ -1055,6 +1149,7 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
     safeStorage.encryptString('synthetic-migration-key').toString('base64')
   )
   await electron.close()
+  await fs.unlink(join(root, '.loom', 'migration.json'))
   await fs.writeFile(
     join(profile, 'agent.json'),
     JSON.stringify({

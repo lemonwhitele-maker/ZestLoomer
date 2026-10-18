@@ -44,7 +44,8 @@ test('current selection survives contradictory history and memory trimming besid
     { contextTokens: 7000, outputTokens: 1024, retryOutputTokens: 1024 }
   ]) {
     const messages = assembleContext(c, '写作助手', { selection }, policy)
-    assert.match(messages[0].content!, /本轮编辑状态：有选区/)
+    assert.equal(messages[0].content, '写作助手')
+    assert.match(messages.at(-2)!.content!, /本轮编辑状态：有选区/)
     assert.equal(messages.at(-1)!.content, '现在是无选区吗？')
     const workspace = JSON.parse(messages.at(-2)!.content!.split('：').slice(1).join('：'))
     assert.deepEqual(workspace.selection, selection)
@@ -54,7 +55,8 @@ test('current selection survives contradictory history and memory trimming besid
     )
   }
   const cleared = assembleContext(c, '写作助手', {}, defaultPolicy)
-  assert.match(cleared[0].content!, /本轮编辑状态：未附带选区/)
+  assert.equal(cleared[0].content, '写作助手')
+  assert.match(cleared.at(-2)!.content!, /本轮编辑状态：未附带选区/)
   assert.equal(JSON.parse(cleared.at(-2)!.content!.split('：').slice(1).join('：')).selection, null)
 })
 
@@ -128,20 +130,28 @@ test('restarted Agent discovers, searches and pages archived history, then edits
           return call('read', { path: `book/chapters/${chapter.id}.txt` }, step)
         }
         if (phase === 'edit') {
-          assert.equal(result().text, chapter.content)
+          assert.equal(result().lines[0].text, chapter.content)
           phase = 'invalid-write'
           return call(
             'edit',
             {
               path: `book/chapters/${chapter.id}.txt`,
-              edits: [{ oldText: '旧段落', newText: '找到红色钥匙' }]
+              baseVersion: chapter.version,
+              edits: [
+                {
+                  mode: 'replace',
+                  target: { kind: 'selection' },
+                  oldText: '旧段',
+                  newText: '找到红色钥匙'
+                }
+              ]
             },
             step
           )
         }
         if (phase === 'invalid-write') {
-          assert.equal(result().code, 'ARGUMENT')
-          assert.match(result().message, /当前有选区.*newText.*不要传 oldText/)
+          assert.equal(result().code, 'SELECTION')
+          assert.match(result().message, /oldText.*完整冻结选区/)
           phase = 'retry-edit'
           return call(
             'write',
@@ -155,7 +165,11 @@ test('restarted Agent discovers, searches and pages archived history, then edits
           phase = 'done'
           return call(
             'edit',
-            { path: `book/chapters/${chapter.id}.txt`, edits: [{ newText: '找到红色钥匙' }] },
+            {
+              path: `book/chapters/${chapter.id}.txt`,
+              baseVersion: chapter.version,
+              edits: [{ mode: 'replace', target: { kind: 'selection' }, newText: '找到红色钥匙' }]
+            },
             step
           )
         }

@@ -1,3 +1,4 @@
+import type { ChapterOutlineBinding, StoryRead } from '../../shared/storyLinks'
 import { rankText } from './relevance'
 import { randomUUID, createHash } from 'node:crypto'
 import { DocumentStore, DocumentError } from '../documents'
@@ -7,6 +8,37 @@ import { templates } from '../../shared/templates'
 import { BookSearchIndex } from './search'
 import { relatedContext } from './related'
 import { assembleReadContext, type ReadRelatedDocuments } from './readContext'
+import { logicalLines, numberedLines, type NumberedLine } from '../../shared/logicalLines'
+import { linePage } from './linePages'
+
+export const toolProtocolVersion = 2
+export function cachedDocument(doc: DocumentSnapshot, story?: StoryRead) {
+  const lines = numberedLines(doc.content)
+  return {
+    ...(story
+      ? {
+          ...(story.chapterOutlineBinding
+            ? { chapterOutlineBinding: story.chapterOutlineBinding }
+            : {}),
+          ...(story.foreshadowChapters ? { foreshadowChapters: story.foreshadowChapters } : {})
+        }
+      : {}),
+    protocolVersion: toolProtocolVersion,
+    resultType: 'document',
+    path: documentPath(doc),
+    version: doc.version,
+    lines,
+    lineRange: {
+      startLine: lines[0]?.line ?? null,
+      endLine: lines.at(-1)?.line ?? null,
+      totalLines: lines.length
+    },
+    range: { start: 0, end: doc.content.length, total: doc.content.length },
+    complete: true,
+    requestedRangeComplete: true,
+    nextCursor: null
+  }
+}
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export const referenceType = {
@@ -14,7 +46,8 @@ export const referenceType = {
   characters: 'character',
   settings: 'setting',
   outlines: 'outline',
-  notes: 'note'
+  notes: 'note',
+  foreshadows: 'foreshadow'
 } as const
 export const documentPath = (doc: { kind: DocumentKind; id: string }) =>
   `book/${doc.kind}/${doc.id}.${doc.kind === 'chapters' ? 'txt' : 'md'}`
@@ -47,13 +80,18 @@ const descriptions = {
   characters: '人物：作者当前采用的资料；背景和未来经历不自动等于正文已发生事件。',
   settings: '设定：作者当前采用的规则及背景。',
   outlines: '大纲：情节安排，不是已经发生的事件。',
+  foreshadows:
+    '伏笔：一个独立 JSON 对象，只有 content、startChapterId、endChapterId 三个字段；修改前须完整读取。章节字段为正文 ID 或 null，不推断完成状态。',
   notes: '速记：构想与讨论材料；只有用户要求整理时才提出人物或设定修改。'
 }
 export const help = {
   'help/index.md':
-    'Loom 使用 list_files/read/create/write/edit。书内路径由工具返回，所有写工具只创建待审阅提案。read({path:目录,query:文字}) 检索；摘要不是原文读取，长文用 nextCursor 续读。全文替换必须完整读取目标。未确定的构想建议保存速记，人物和设定没有内容状态。',
+    '正文／大纲的 chapterOutlineBinding 是确定映射；伏笔的 foreshadowChapters 是章节定位。附件不算读取目标原文，修改前须另行 read。关系变化时分页须重读，提案接受复核实际依赖关系。Loom 工具协议 v2：list_files/read/create/write/edit。书内路径由工具返回，所有写工具只创建待审阅提案。read({path:目录,query:文字}) 检索；摘要不是原文读取。真实文档以 lines 展示绝对行号，eol 是原有换行；fragment 为行内 UTF-16 偏移，complete:false 的超长行须 nextCursor 补齐。字符 range 不是行号，不能用于 edit。requestedRangeComplete 只说明请求范围返回完毕，complete 才表示同版本全文已读。全文替换必须完整读取目标。edit 必须传 baseVersion，无选区用行范围或文档边界，oldText 仅用于完整选区原文核验。详情 read help/edit.md。未确定的构想建议保存速记，人物和设定没有内容状态。',
+  'help/edit.md':
+    '协议 v2。read({path,startLine:12,endLine:14}) 补读完整目标行（两个行字段同时提供，不与 paths/cursor/query 混用）。行号从 1 起，空行占一行，末尾终止换行不新增虚拟行；空文档 totalLines:0。edit({path,baseVersion,edits:[{mode:"replace",target:{kind:"lines",startLine:12,endLine:14},newText:"范围完整新文本"}]})；句内小改动也返回整行。替换保留末行终止换行，空 newText 删行时一并删除该换行。插入只传新增文本：{mode:"insert",target:{kind:"before_line",line:12},newText:"新增段落"}，或 after_line；document_start/document_end 不传行号。边界插入沿用分段：已有空行分段的正文补足两个换行，其余文档至少一个；合计连接处已有换行，只补缺失部分，显式空行保留。文首/末插入须读完整首/末行；空文档须先 read。续写明确在文末时用 document_end，位置不明确先澄清。有效选区只允许一项 {mode:"replace",target:{kind:"selection"},newText:"完整选区替换文本"}；oldText 可省略，若传必须等于完整冻结选区，不得传子串或坐标。选区存在时不允许行替换和插入。无选区 oldText 一律拒绝。所有行号基于同一 baseVersion，1–20 项，不重算前项产生的偏移；拒绝重叠、同点插入及插入与替换边界冲突。完整读目标行只是最低定位证据，创作仍须补足上下文。',
   'help/characters.md': `${descriptions.characters}\n新建时后端统一模板区块，缺失内容留空；不需要 YAML 元数据。名称在标题栏。当前状态写明故事阶段。无来源的信息留空。\n${templates.characters}`,
   'help/settings.md': `${descriptions.settings}\n新建时后端统一模板区块，缺失内容留空；不需要 YAML 元数据。\n${templates.settings}`,
+  'help/foreshadows.md': `${descriptions.foreshadows}\n一条伏笔一个 .md；JSON 只能有三个固定字段，拒绝重复键。create/write/edit 均先生成提案。保留的旧引用失效可继续修改其他字段；新引用必须存在且未回收。`,
   'help/outlines.md': `${descriptions.outlines}\n独立平铺 Markdown 条目，不提供分卷、父子层级和 Agent 排序工具。`,
   'help/notes.md': `${descriptions.notes}\n多份独立 Markdown 文档。明确要求依据速记整理人物、设定或大纲时，可以直接提出目标资料提案，不增加内容状态确认。`,
   'help/references.md':
@@ -73,12 +111,14 @@ export const toolDefinitions = [
   {
     name: 'read',
     description:
-      '读取原文、批量读取、分页续读，或目录加 query 文字检索。历史对话：read({path:"book/conversations/",query:"关键词"}) 检索，read({path:"book/conversations/conversation_<uuid>.md"}) 读取清单返回的完整对话；空的会话摘录不代表没有历史。正文返回 relatedDocuments，列出本次页面命中的人物、设定名称及别名和资料路径，仅供定位，详情须另行 read。book/views/outline.md 有当前文档时展开关联章节、大纲、人物与设定，否则为章节大纲目录；book/views/{文档ID}.md 展开两层引用、标题和可选别名关联，仅供定位。path/paths/cursor 三选一。检查 complete，按 nextCursor 续读。',
+      '协议 v2：读取原文、批量/分页，或目录加 query 检索。真实文档只返回 lines（绝对行号、text、complete、原换行 eol），不重复全文 text。超长行 fragment 的偏移是 UTF-16 字符，必须续读完整行才可整行编辑。complete 表示同版本全文已读；requestedRangeComplete 仅表示请求范围完毕。path/paths/cursor 三选一；单文档 path 可同时指定 startLine/endLine（含首尾），不能与 query 合用。maxChars 包含行号与结构开销；按 nextCursor 续读。历史对话目录 book/conversations/ 可 list_files 或加 query 定位，再 read 返回路径。正文 relatedDocuments 是本次页面命中名称及别名的资料路径，仅供定位。book/views/outline.md 或 book/views/{文档ID}.md 仅供关联定位，不算原文读取。',
     properties: {
       path: { type: 'string' },
       paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 12 },
       cursor: { type: 'string' },
       query: { type: 'string' },
+      startLine: { type: 'integer', minimum: 1 },
+      endLine: { type: 'integer', minimum: 1 },
       maxChars: { type: 'integer', minimum: 500, maximum: 16000 }
     }
   },
@@ -108,27 +148,61 @@ export const toolDefinitions = [
   {
     name: 'edit',
     description:
-      '局部修改提案；无选区用唯一匹配 oldText/newText，多个编辑互不重叠。有选区调用示例：edit({path:"目标路径",edits:[{newText:"完整选区替换文本"}]} )；不要传 oldText、from 或 to，不要取消选区或改用 write。',
+      '协议 v2 局部修改提案，必传 read 返回的 baseVersion。无选区整行替换用 mode:replace,target:{kind:lines,startLine,endLine}；插入用 mode:insert,target:{kind:before_line|after_line,line} 或 {kind:document_start|document_end}，只输出新增文本。须完整读目标行；文末续写须读完整末行及文末。所有行号基于同一版本。有效选区只用一项 mode:replace,target:{kind:selection} 替换完整冻结选区，oldText 可选但须为完整选区原文，其他分支禁止 oldText。选区不允许插入或行替换。空 insert 拒绝；重叠及插入接界拒绝。详情 read help/edit.md。',
     properties: {
       path: { type: 'string' },
+      baseVersion: { type: 'string' },
       edits: {
         type: 'array',
         minItems: 1,
         maxItems: 20,
         items: {
-          type: 'object',
-          properties: {
-            oldText: { type: 'string', description: '仅无选区时必填；有选区时省略。' },
-            newText: { type: 'string', description: '替换文本；有选区时替换整个选区。' }
-          },
-          required: ['newText'],
-          additionalProperties: false
+          oneOf: [
+            {
+              mode: 'replace',
+              kind: 'lines',
+              fields: {
+                startLine: { type: 'integer', minimum: 1 },
+                endLine: { type: 'integer', minimum: 1 }
+              }
+            },
+            { mode: 'replace', kind: 'selection', fields: {} },
+            {
+              mode: 'insert',
+              kind: 'before_line',
+              fields: { line: { type: 'integer', minimum: 1 } }
+            },
+            {
+              mode: 'insert',
+              kind: 'after_line',
+              fields: { line: { type: 'integer', minimum: 1 } }
+            },
+            { mode: 'insert', kind: 'document_start', fields: {} },
+            { mode: 'insert', kind: 'document_end', fields: {} }
+          ].map(({ mode, kind, fields }) => ({
+            type: 'object',
+            properties: {
+              mode: { type: 'string', enum: [mode] },
+              target: {
+                type: 'object',
+                properties: { kind: { type: 'string', enum: [kind] }, ...fields },
+                required: ['kind', ...Object.keys(fields)],
+                additionalProperties: false
+              },
+              newText: { type: 'string', ...(mode === 'insert' ? { minLength: 1 } : {}) },
+              ...(kind === 'selection'
+                ? { oldText: { type: 'string', description: '可选；必须等于完整冻结选区原文。' } }
+                : {})
+            },
+            required: ['mode', 'target', 'newText'],
+            additionalProperties: false
+          }))
         }
       },
       reason: { type: 'string' },
       sources: { type: 'array', items: { type: 'string' } }
     },
-    required: ['path', 'edits']
+    required: ['path', 'baseVersion', 'edits']
   }
 ].map((tool) => ({
   type: 'function',
@@ -145,17 +219,26 @@ export const toolDefinitions = [
 }))
 
 interface ReadEntry {
+  binding?: ChapterOutlineBinding
   doc: DocumentSnapshot
   ranges: { start: number; end: number }[]
 }
 interface Cursor {
+  bindingToken?: string
   path: string
   version: string
   offset: number
   result?: string
+  rangeEnd?: number
 }
 export class BookDocumentAdapter {
   readonly reads = new Map<string, ReadEntry>()
+  private contextBindings = new Map<string, ChapterOutlineBinding>()
+  seedBinding(id: string, binding?: ChapterOutlineBinding): void {
+    if (binding) this.contextBindings.set(id, binding)
+    if (binding?.state === 'bound')
+      this.explicitReferences.add(`${referenceType[binding.target.kind]}:${binding.target.id}`)
+  }
   private delivered = new Map<string, ReadEntry>()
   private cursors = new Map<string, Cursor>()
   private explicitReferences = new Set<string>()
@@ -176,9 +259,19 @@ export class BookDocumentAdapter {
   ) {
     this.captureReferences(userText)
   }
-  seedRead(doc: DocumentSnapshot): void {
+  seedRead(
+    doc: DocumentSnapshot,
+    binding?: ChapterOutlineBinding,
+    chapters?: StoryRead['foreshadowChapters']
+  ): void {
+    if (binding?.state === 'bound')
+      this.explicitReferences.add(`${referenceType[binding.target.kind]}:${binding.target.id}`)
+    if (chapters && !('error' in chapters))
+      for (const target of [chapters.start, chapters.end])
+        if (target) this.explicitReferences.add(`chapter:${target.id}`)
     this.reads.set(doc.id, {
       doc: structuredClone(doc),
+      binding,
       ranges: [{ start: 0, end: doc.content.length }]
     })
     this.captureReferences(doc.content)
@@ -194,13 +287,13 @@ export class BookDocumentAdapter {
   }
   private captureReferences(text: string): void {
     for (const match of text.matchAll(
-      /\[\[(chapter|character|setting|outline|note):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
+      /\[\[(chapter|character|setting|outline|note|foreshadow):(doc_[a-f0-9-]{36})(?:\|[^\]\r\n]*)?\]\]/g
     ))
       this.explicitReferences.add(`${match[1]}:${match[2]}`)
   }
   path(path: string): { kind: DocumentKind; id: string } {
     const match =
-      /^book\/(chapters|characters|settings|outlines|notes)\/(doc_[a-f0-9-]{36})\.(txt|md)$/.exec(
+      /^book\/(chapters|characters|settings|outlines|notes|foreshadows)\/(doc_[a-f0-9-]{36})\.(txt|md)$/.exec(
         path
       )
     if (!match || (match[1] === 'chapters' ? match[3] !== 'txt' : match[3] !== 'md'))
@@ -209,10 +302,11 @@ export class BookDocumentAdapter {
   }
   directory(path: string): DocumentKind | 'all' | 'conversations' {
     if (path === 'book/' || path === 'book') return 'all'
-    const match = /^book\/(chapters|characters|settings|outlines|notes|conversations)\/?$/.exec(
-      path
-    )
-    if (!match) fail('PATH', '只接受当前作品的五类文档目录或历史对话目录')
+    const match =
+      /^book\/(chapters|characters|settings|outlines|notes|foreshadows|conversations)\/?$/.exec(
+        path
+      )
+    if (!match) fail('PATH', '只接受当前作品的六类文档目录或历史对话目录')
     return match![1] as DocumentKind | 'conversations'
   }
   private budget(args: Record<string, unknown>): number {
@@ -273,11 +367,14 @@ export class BookDocumentAdapter {
       sourceKind?: DocumentKind
       trashed?: boolean
       text?: string
-      items?: { sourceKind?: DocumentKind; trashed?: boolean; text?: string }[]
+      lines?: NumberedLine[]
+      items?: { sourceKind?: DocumentKind; trashed?: boolean; lines?: NumberedLine[] }[]
     }
     const fragments = (result.resultType === 'batch' ? result.items || [] : [result])
       .filter((page) => page.sourceKind === 'chapters' && !page.trashed)
-      .flatMap((page) => (typeof page.text === 'string' ? [page.text] : []))
+      .flatMap((page) =>
+        page.lines ? [page.lines.map((line) => line.text + (line.eol ?? '')).join('')] : []
+      )
     return fragments.length
       ? {
           ...result,
@@ -329,8 +426,21 @@ export class BookDocumentAdapter {
   }
   private async readResult(args: Record<string, unknown>): Promise<unknown> {
     this.signal?.throwIfAborted()
-    checkKeys(args, ['path', 'paths', 'cursor', 'query', 'maxChars'])
+    checkKeys(args, ['path', 'paths', 'cursor', 'query', 'maxChars', 'startLine', 'endLine'])
     const max = this.budget(args)
+    const hasLines = args.startLine !== undefined || args.endLine !== undefined
+    if (
+      hasLines &&
+      (typeof args.path !== 'string' ||
+        args.paths !== undefined ||
+        args.cursor !== undefined ||
+        args.query !== undefined ||
+        !Number.isSafeInteger(args.startLine) ||
+        !Number.isSafeInteger(args.endLine) ||
+        Number(args.startLine) < 1 ||
+        Number(args.endLine) < Number(args.startLine))
+    )
+      fail('ARGUMENT', 'startLine/endLine 必须同时提供合法正整数，仅与单文档 path 合用')
     if ([args.path, args.paths, args.cursor].filter((v) => v !== undefined).length !== 1)
       fail('ARGUMENT', 'path/paths/cursor 必须三选一')
     if (args.cursor) {
@@ -339,7 +449,17 @@ export class BookDocumentAdapter {
       if (!c) fail('CURSOR', '游标不属于本轮，请重新读取')
       return c!.result !== undefined
         ? this.resultPage(c!.path, c!.result, c!.offset, max)
-        : this.page(c!.path, max, c!.offset, c!.version)
+        : this.page(
+            c!.path,
+            max,
+            c!.offset,
+            c!.version,
+            undefined,
+            c!.rangeEnd,
+            18000,
+            undefined,
+            c!.bindingToken
+          )
     }
     if (args.paths !== undefined) {
       if (
@@ -347,17 +467,42 @@ export class BookDocumentAdapter {
         !Array.isArray(args.paths) ||
         args.paths.length < 1 ||
         args.paths.length > 12 ||
-        args.paths.some((p) => typeof p !== 'string')
+        args.paths.some((p) => typeof p !== 'string' || p.length > 250)
       )
         fail('ARGUMENT', 'paths 应包含 1–12 个文档路径，不与 query 合用')
+      const batchPaths = args.paths as string[]
+      const ids = batchPaths
+        .map((path) => {
+          try {
+            return this.path(path).id
+          } catch {
+            return null
+          }
+        })
+        .filter((id): id is string => id !== null)
+      const batchErrors = new Map<string, string>()
+      let stories: StoryRead[] = []
+      try {
+        stories = await this.store.readWithBindings(this.bookId, ids, true, batchErrors)
+      } catch {
+        fail('BATCH_READ', '批量文档无法形成一致快照，请检查路径并分别读取')
+      }
       return {
         resultType: 'batch',
         items: await Promise.all(
           (args.paths as string[]).map(async (path) => {
             try {
+              const parsed = this.path(path)
+              if (batchErrors.has(parsed.id)) return { path, error: batchErrors.get(parsed.id) }
               return await this.page(
                 path,
-                Math.max(1, Math.floor(max / (args.paths as string[]).length))
+                Math.max(1, Math.floor(max / (args.paths as string[]).length)),
+                0,
+                undefined,
+                undefined,
+                undefined,
+                Math.floor(18000 / (args.paths as string[]).length),
+                stories.find((item) => documentPath(item.document) === path)
               )
             } catch (error) {
               return { path, error: (error as Error).message }
@@ -367,6 +512,13 @@ export class BookDocumentAdapter {
       }
     }
     const path = textArg(args, 'path', 250)
+    if (hasLines) {
+      this.path(path)
+      return this.page(path, max, 0, undefined, {
+        startLine: Number(args.startLine),
+        endLine: Number(args.endLine)
+      })
+    }
     if (args.query !== undefined) {
       const kind = this.directory(path)
       const query = textArg(args, 'query', 200).trim().toLocaleLowerCase()
@@ -406,12 +558,24 @@ export class BookDocumentAdapter {
     }
     if (
       /^book\/?$/.test(path) ||
-      /^book\/(chapters|characters|settings|outlines|notes|conversations)\/?$/.test(path)
+      /^book\/(chapters|characters|settings|outlines|notes|foreshadows|conversations)\/?$/.test(
+        path
+      )
     )
       return this.list({ path, maxChars: max })
     return this.page(path, max)
   }
-  private async page(path: string, max: number, start = 0, expected?: string): Promise<unknown> {
+  private async page(
+    path: string,
+    max: number,
+    start = 0,
+    expected?: string,
+    requested?: { startLine: number; endLine: number },
+    rangeEnd?: number,
+    envelopeBudget = 18000,
+    snapshot?: StoryRead,
+    expectedBindingToken?: string
+  ): Promise<unknown> {
     if (path in help) {
       const text = help[path as keyof typeof help]
       return this.resultPage(path, text, start, max)
@@ -463,24 +627,59 @@ export class BookDocumentAdapter {
       return this.resultPage(path, `历史讨论，不是现行设定。\n${history!.text}`, start, max)
     }
     const { id, kind } = this.path(path)
-    const d = await this.store.agentRead(
-      this.bookId,
-      id,
-      this.explicitReferences.has(`${referenceType[kind]}:${id}`)
-    )
+    const story = snapshot ?? (await this.store.readWithBindings(this.bookId, [id], true))[0]
+    const d = story.document
+    if (d.trashedAt && !this.explicitReferences.has(`${referenceType[kind]}:${id}`))
+      fail('TRASHED', '回收站目标只能沿明确引用读取')
+    const attachment = {
+      ...(story.chapterOutlineBinding
+        ? { chapterOutlineBinding: story.chapterOutlineBinding }
+        : {}),
+      ...(story.foreshadowChapters ? { foreshadowChapters: story.foreshadowChapters } : {})
+    }
+    const bindingToken = digest(JSON.stringify(attachment))
+    if (expectedBindingToken && bindingToken !== expectedBindingToken)
+      fail('BINDING_CHANGED', '分页期间关系或目标状态已变化，请重新读取')
+    const binding = story.chapterOutlineBinding
+    if (binding?.state === 'bound')
+      this.explicitReferences.add(`${referenceType[binding.target.kind]}:${binding.target.id}`)
+    if (story.foreshadowChapters && !('error' in story.foreshadowChapters))
+      for (const target of [story.foreshadowChapters.start, story.foreshadowChapters.end])
+        if (target) this.explicitReferences.add(`chapter:${target.id}`)
     if (d.kind !== kind) fail('PATH', '文档路径类型不匹配')
     if (expected && d.version !== expected) fail('VERSION', '分页期间文档变化，重新读取原文')
-    const end = Math.min(d.content.length, start + max)
+    if (requested) {
+      const index = logicalLines(d.content)
+      if (requested.endLine > index.length) fail('ARGUMENT', '行号越界，请按 totalLines 核对范围')
+      start = index[requested.startLine - 1].start
+      rangeEnd = index[requested.endLine - 1].after
+    }
+    const limit = rangeEnd ?? d.content.length
+    // Reserve bounded per-document metadata, including worst-case escaped titles.
+    // The whole batch stays below 18k before related-document and execution metadata.
+    const attachmentChars = JSON.stringify(attachment).length
+    const lineBudget = Math.min(
+      max - attachmentChars,
+      envelopeBudget - JSON.stringify(d.title).length - 1024 - attachmentChars
+    )
+    if (lineBudget < 2) fail('BUDGET', '文档元数据超出批量额度，请减少 paths 后重读')
+    const { lines, end, lineRange } = linePage(d.content, start, limit, lineBudget)
     if (!d.trashedAt) {
       const prev = this.reads.get(id)
-      const entry = prev?.doc.version === d.version ? prev : { doc: d, ranges: [] }
+      const entry =
+        prev?.doc.version === d.version && JSON.stringify(prev.binding) === JSON.stringify(binding)
+          ? prev
+          : { doc: d, ranges: [] }
+      entry.binding = binding
       entry.ranges.push({ start, end })
       this.reads.set(id, entry)
       this.captureReferences(d.content.slice(start, end))
       if (this.covers(id, 0, d.content.length)) this.captureReferences(d.content)
     }
     return {
+      ...attachment,
       resultType: 'document',
+      protocolVersion: toolProtocolVersion,
       path,
       title: d.title,
       id,
@@ -488,11 +687,15 @@ export class BookDocumentAdapter {
       version: d.version,
       readingNotice: d.trashedAt ? '已回收，仅供历史核对，不是当前有效资料。' : descriptions[kind],
       trashed: Boolean(d.trashedAt),
-      text: d.content.slice(start, end),
+      lines,
+      lineRange,
       range: { start, end, total: d.content.length },
       complete: !d.trashedAt && this.covers(id, 0, d.content.length),
+      requestedRangeComplete: end === limit,
       nextCursor:
-        end < d.content.length ? this.token({ path, version: d.version, offset: end }) : null
+        end < limit
+          ? this.token({ path, version: d.version, offset: end, rangeEnd: limit, bindingToken })
+          : null
     }
   }
   covers(id: string, start: number, end: number): boolean {
@@ -508,13 +711,33 @@ export class BookDocumentAdapter {
     return pos >= end
   }
   async target(path: string, full: boolean): Promise<DocumentSnapshot> {
+    return (await this.targetStory(path, full)).document
+  }
+  async targetStory(path: string, full: boolean): Promise<StoryRead> {
     const { id, kind } = this.path(path)
-    const d = await this.store.agentRead(this.bookId, id)
+    const story = (await this.store.readWithBindings(this.bookId, [id]))[0]
+    const d = story.document
+    const identity = (binding?: ChapterOutlineBinding) =>
+      binding?.state === 'bound' ? binding.target.id : binding?.state
+    if (identity(story.chapterOutlineBinding) !== identity(this.evidence.get(id)?.binding))
+      fail('READ_REQUIRED', '关系或目标状态已变化，请重新 read')
     if (d.kind !== kind || this.evidence.get(id)?.doc.version !== d.version)
       fail('READ_REQUIRED', '先 read 同版本目标原文')
-    if (full && !this.deliveredCovers(id, 0, d.content.length))
+    if ((full || kind === 'foreshadows') && !this.deliveredCovers(id, 0, d.content.length))
       fail('FULL_READ_REQUIRED', '全文替换前必须完整续读目标')
-    return d
+    return story
+  }
+  bindingDependencies() {
+    const entries = new Map<string, { doc: { id: string }; binding?: ChapterOutlineBinding }>(
+      [...this.contextBindings].map(([id, binding]) => [id, { doc: { id }, binding }])
+    )
+    for (const entry of this.evidence.values()) entries.set(entry.doc.id, entry)
+    return [...entries.values()].flatMap(({ doc, binding }) => {
+      if (binding?.state === 'error') fail('BINDING_READ', '关系损坏，不能生成依赖该文档的提案')
+      return binding
+        ? [{ id: doc.id, targetId: binding.state === 'bound' ? binding.target.id : null }]
+        : []
+    })
   }
   async sources(args: Record<string, unknown>): Promise<SourceRef[]> {
     if (args.sources === undefined) return []

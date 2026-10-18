@@ -3,6 +3,13 @@ import type { LoomAPI } from '../shared/documents'
 import type { AgentEvent } from '../shared/agent'
 const invoke = (name: string, ...args: unknown[]) => ipcRenderer.invoke(`loom:${name}`, ...args)
 const api: LoomAPI = {
+  story: {
+    match: (book, revision) => invoke('story:match', book, revision),
+    bindings: (book) => invoke('story:bindings', book),
+    bind: (input) => invoke('story:bind', input),
+    read: (book, ids) => invoke('story:read', book, ids),
+    foreshadows: (book, offset, limit) => invoke('story:foreshadows', book, offset, limit)
+  },
   tools: {
     config: () => invoke('tools:config'),
     configure: (input) => invoke('tools:configure', input),
@@ -29,6 +36,8 @@ const api: LoomAPI = {
     cancelSearch: (book) => invoke('workspace:search-cancel', book)
   },
   agent: {
+    heavySettings: () => invoke('agent:heavy-settings'),
+    saveHeavySettings: (settings) => invoke('agent:heavy-save', settings),
     exportLog: (book, id) => invoke('agent:export-log', book, id),
     bind: (book) => invoke('agent:bind', book),
     snapshot: (book) => invoke('agent:snapshot', book),
@@ -53,6 +62,7 @@ const api: LoomAPI = {
   },
   bootstrap: () => invoke('bootstrap'),
   createBook: (title) => invoke('create-book', title),
+  renameBook: (bookId, title) => invoke('rename-book', bookId, title),
   openBook: () => invoke('open-book'),
   list: (book) => invoke('list', book),
   create: (book, kind, title, template) => invoke('create', book, kind, title, template),
