@@ -9,13 +9,65 @@ let root: string
 let profile: string
 const consoleErrors: string[] = []
 
+test('LOOM-029 heavy settings and conversation snapshots persist', async () => {
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('tab', { name: /超重agent/ }).click()
+  await expect(page.getByLabel('追加 prompt', { exact: true })).not.toBeChecked()
+  await expect(page.getByRole('button', { name: '选择保存位置' })).toHaveCount(0)
+  await expect(page.getByText('配置保存在当前 BookList：', { exact: false })).toContainText(root)
+  await page.getByLabel('追加 prompt', { exact: true }).check()
+  await page.getByLabel('追加指令', { exact: true }).fill('冻结偏好 A')
+  await page.getByLabel('追加本章大纲全文').check()
+  await page.getByRole('button', { name: '保存超重agent 设置' }).click()
+  await expect(page.locator('.settings-footer')).toContainText('已保存，仅影响后续新建对话')
+  const create = () =>
+    page.evaluate(async () => {
+      const boot = await window.loom.bootstrap()
+      if (!boot.ok) throw new Error(boot.message)
+      const bookId = boot.value.preferences.lastBookId!
+      const bound = await window.loom.agent.bind(bookId)
+      if (!bound.ok) throw new Error(bound.message)
+      const c = await window.loom.agent.create(bookId, '快照测试')
+      if (!c.ok) throw new Error(c.message)
+      return c.value
+    })
+  const a = await create()
+  await page.getByLabel('追加指令', { exact: true }).fill('未保存内容')
+  await page.getByRole('button', { name: '关闭', exact: true }).click()
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click()
+  await expect(page.getByLabel('追加指令', { exact: true })).toHaveValue('未保存内容')
+  await page.getByLabel('追加指令', { exact: true }).fill('冻结偏好 B')
+  await page.getByRole('button', { name: '保存超重agent 设置' }).click()
+  await expect(page.locator('.settings-footer')).toContainText('已保存，仅影响后续新建对话')
+  const b = await create()
+  expect(a.heavySettings?.prompt).toBe('冻结偏好 A')
+  expect(b.heavySettings?.prompt).toBe('冻结偏好 B')
+  await page.screenshot({ path: join(root, 'heavy-settings.png') })
+  await electron.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) w.destroy()
+  })
+  await electron.close()
+  await launch()
+  const restored = await page.evaluate(async ({ bookId }) => window.loom.agent.bind(bookId), a)
+  expect(restored.ok).toBe(true)
+  if (restored.ok) {
+    expect(restored.value.conversations.find((c) => c.id === a.id)?.heavySettings?.prompt).toBe(
+      '冻结偏好 A'
+    )
+    expect(restored.value.conversations.find((c) => c.id === b.id)?.heavySettings?.prompt).toBe(
+      '冻结偏好 B'
+    )
+  }
+})
+
 async function launch(): Promise<void> {
   const env: Record<string, string> = Object.fromEntries(
     Object.entries(process.env).filter(
       (entry): entry is [string, string] => typeof entry[1] === 'string'
     )
   )
-  env.LOOM_USER_DATA = profile
+  env.LOOM_PREVIEW_USER_DATA = profile
+  env.LOOM_PREVIEW_BOOKLIST = root
   env.LOOM_TEST_HIDDEN = '1'
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
@@ -33,6 +85,31 @@ test.beforeEach(async () => {
   await fs.mkdir(resolve('.test-artifacts'), { recursive: true })
   root = await fs.mkdtemp(resolve('.test-artifacts/workspace-window-'))
   profile = join(root, 'profile')
+  if (process.env.LOOM_STORY_MODEL_CONFIG) {
+    await fs.mkdir(join(root, '.loom'), { recursive: true })
+    await fs.copyFile(process.env.LOOM_STORY_MODEL_CONFIG, join(root, '.loom', 'agent.json'))
+    if (process.env.LOOM_STORY_MODEL_PROFILE) {
+      const isolatedPath = join(root, '.loom', 'agent.json')
+      const config = JSON.parse(await fs.readFile(isolatedPath, 'utf8'))
+      const selected = config.profiles.find(
+        (item: { id: string }) => item.id === process.env.LOOM_STORY_MODEL_PROFILE
+      )
+      if (!selected || !/gemini/i.test(selected.model))
+        throw new Error('Selected test profile must be Gemini')
+      await fs.writeFile(
+        isolatedPath,
+        JSON.stringify({ ...config, profiles: [selected], defaultProfileId: selected.id })
+      )
+    }
+    if (process.env.LOOM_STORY_LOCAL_STATE) {
+      const original = JSON.parse(await fs.readFile(process.env.LOOM_STORY_LOCAL_STATE, 'utf8'))
+      await fs.mkdir(profile, { recursive: true })
+      await fs.writeFile(
+        join(profile, 'Local State'),
+        JSON.stringify({ os_crypt: original.os_crypt })
+      )
+    }
+  }
   consoleErrors.length = 0
   await launch()
   await page.getByRole('button', { name: '新建作品', exact: true }).click()
@@ -77,6 +154,240 @@ async function activeTitles(): Promise<string[]> {
     .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     .map((item) => item.title)
 }
+
+test('book name can be edited and survives restart', async () => {
+  await page.getByRole('button', { name: '修改作品名称', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '新标题' })).toHaveValue('新能力验收作品')
+  await page.getByRole('textbox', { name: '新标题' }).fill('修改后的作品名')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByLabel('当前作品').locator('option:checked')).toHaveText('修改后的作品名')
+  await electron.evaluate(({ BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) window.destroy()
+  })
+  await electron.close()
+  await launch()
+  await expect(page.getByLabel('当前作品').locator('option:checked')).toHaveText('修改后的作品名')
+})
+
+test('story links navigate both ways and foreshadow rows save independently', async () => {
+  await page.getByRole('button', { name: /^大纲/ }).click()
+  await newDocument('章一大纲')
+  const outline = (await docs()).find((doc) => doc.kind === 'outlines')!
+  // Create a chapter through the same desktop IPC, avoiding unrelated naming dialog steps.
+  await page.evaluate(async () => {
+    const boot = await window.loom.bootstrap()
+    if (!boot.ok) throw new Error(boot.message)
+    const created = await window.loom.create(boot.value.preferences.lastBookId!, 'chapters', '章一')
+    if (!created.ok) throw new Error(created.message)
+  })
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await page.getByRole('button', { name: /^正文/ }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue('章一')
+  const chapter = (await docs()).find((doc) => doc.kind === 'chapters')!
+  await page.getByRole('combobox', { name: '选择关联文档' }).selectOption(outline.id)
+  await expect(page.getByRole('combobox', { name: '选择关联文档' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '保存关联', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '刷新关系', exact: true })).toHaveCount(0)
+  await fs.writeFile(
+    resolve('.test-artifacts/story-binding-ui.txt'),
+    await page.locator('.story-tools').innerText()
+  )
+  await page.getByRole('button', { name: /^章一大纲.*↗$/ }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue('章一大纲')
+  await page.getByRole('button', { name: /^章一\s*↗$/ }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue('章一')
+  await page.getByRole('button', { name: /^伏笔/ }).click()
+  await page.getByRole('button', { name: '新建伏笔', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '编辑伏笔内容', exact: true }).click()
+  await page.getByRole('textbox', { name: '伏笔内容', exact: true }).fill('遇热显现纹路')
+  await page.getByRole('button', { name: '编辑开始章节', exact: true }).click()
+  await page.getByRole('combobox', { name: '开始章节', exact: true }).selectOption(chapter.id)
+  await page.getByRole('button', { name: '保存此行', exact: true }).click()
+  await expect(page.getByRole('button', { name: '保存此行', exact: true })).toHaveCount(0)
+  const foreshadow = (await docs()).find((doc) => doc.kind === 'foreshadows')!
+  expect(JSON.parse((await disk(foreshadow.id)).content)).toEqual({
+    content: '遇热显现纹路',
+    startChapterId: chapter.id,
+    endChapterId: null
+  })
+  await page.getByRole('button', { name: /^章一\s*↗$/ }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue('章一')
+  await page.getByRole('button', { name: /^伏笔/ }).click()
+  await expect(page.getByRole('button', { name: '编辑伏笔内容', exact: true })).toHaveText(
+    '遇热显现纹路'
+  )
+  await page.getByRole('button', { name: '新建伏笔', exact: true }).click()
+  const rows = page.locator('.story-tools tbody tr')
+  await expect(rows).toHaveCount(2)
+  await rows.nth(1).getByRole('button', { name: '编辑伏笔内容', exact: true }).click()
+  await rows.nth(1).getByRole('textbox', { name: '伏笔内容', exact: true }).fill('第二条独立伏笔')
+  await rows.nth(0).getByRole('button', { name: '编辑伏笔内容', exact: true }).click()
+  await rows.nth(0).getByRole('textbox', { name: '伏笔内容', exact: true }).fill('临时修改')
+  await rows.nth(0).getByRole('button', { name: '取消修改', exact: true }).click()
+  await expect(rows.nth(0)).toContainText('遇热显现纹路')
+  await rows.nth(1).getByRole('button', { name: '保存此行', exact: true }).click()
+  await expect(rows.nth(1).getByRole('button', { name: '保存此行', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '刷新表格', exact: true }).click()
+  await expect(rows).toHaveCount(2)
+  await expect(rows.nth(1)).toContainText('第二条独立伏笔')
+  await rows.nth(0).getByRole('button', { name: '原文／历史', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '返回伏笔表格', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveCount(0)
+  await expect(rows).toHaveCount(2)
+  await page.screenshot({ path: resolve('.test-artifacts/story-links-desktop.png') })
+  await page.evaluate(() => (document.documentElement.dataset.theme = 'dark'))
+  await page.screenshot({ path: resolve('.test-artifacts/foreshadows-dark.png') })
+})
+
+test('chapter numbers automatically bind and the match button fills existing unbound pairs', async () => {
+  await page.getByRole('button', { name: /^大纲/ }).click()
+  await newDocument('第012章大纲')
+  await page.evaluate(async () => {
+    const boot = await window.loom.bootstrap()
+    if (!boot.ok) throw new Error(boot.message)
+    const result = await window.loom.create(
+      boot.value.preferences.lastBookId!,
+      'chapters',
+      '第十二章 铜钥匙'
+    )
+    if (!result.ok) throw new Error(result.message)
+  })
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await page.getByRole('button', { name: /^正文/ }).click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue(
+    '第十二章 铜钥匙'
+  )
+  const link = page.getByRole('button', { name: /^第012章大纲.*↗$/ })
+  await expect(link).toBeVisible()
+  await page.getByRole('combobox', { name: '选择关联文档' }).selectOption('')
+  await expect(link).toHaveCount(0)
+  await page.getByRole('button', { name: '自动匹配', exact: true }).click()
+  await expect(link).toBeVisible()
+  await expect(page.locator('.story-tools')).toContainText('已新增 1 组绑定')
+  await link.click()
+  await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue(
+    '第012章大纲'
+  )
+  await expect(page.getByRole('button', { name: /^第十二章 铜钥匙.*↗$/ })).toBeVisible()
+  await page.screenshot({ path: resolve('.test-artifacts/chapter-auto-binding.png') })
+})
+
+test('real model searches reads proposes one foreshadow field and rereads after acceptance', async () => {
+  test.skip(
+    !process.env.LOOM_STORY_MODEL_CONFIG,
+    'Requires an explicitly selected local model configuration'
+  )
+  test.setTimeout(240000)
+  const state = await page.evaluate(async () => {
+    const api = window.loom
+    const boot = await api.bootstrap()
+    if (!boot.ok) throw new Error(boot.message)
+    const bookId = boot.value.preferences.lastBookId!
+    const chapter = await api.create(bookId, 'chapters', '合成第一章')
+    const record = await api.create(bookId, 'foreshadows', '合成铜钥匙伏笔')
+    if (!chapter.ok || !record.ok) throw new Error('fixture creation failed')
+    const saved = await api.save({
+      bookId,
+      id: record.value.document.id,
+      title: '合成铜钥匙伏笔',
+      expectedVersion: record.value.document.version,
+      content: JSON.stringify(
+        {
+          content: '铜钥匙遇热浮现旧纹路。',
+          startChapterId: chapter.value.document.id,
+          endChapterId: null
+        },
+        null,
+        2
+      )
+    })
+    if (!saved.ok) throw new Error(saved.message)
+    const bound = await api.agent.bind(bookId)
+    if (!bound.ok) throw new Error(bound.message)
+    const conversation = await api.agent.create(bookId, '映射伏笔真实模型验收（合成数据）')
+    if (!conversation.ok) throw new Error(conversation.message)
+    const started = await api.agent.start(
+      bookId,
+      conversation.value.id,
+      '这是一部合成测试作品。请先用 read({path:"book/",query:"铜钥匙"}) 混合搜索，随后 read 命中的伏笔文档完整原文；只将该伏笔 content 字段里的“旧纹路”改成“新纹路”，其他两个字段原样保留。使用 edit 提出一条待审提案，不创建其他文档。',
+      {}
+    )
+    if (!started.ok) throw new Error(started.message)
+    return {
+      bookId,
+      conversationId: conversation.value.id,
+      documentId: saved.value.id,
+      chapterId: chapter.value.document.id
+    }
+  })
+  const snapshot = async () =>
+    page.evaluate(async (bookId) => {
+      const result = await window.loom.agent.snapshot(bookId)
+      if (!result.ok) throw new Error(result.message)
+      return result.value
+    }, state.bookId)
+  await expect
+    .poll(async () => Boolean((await snapshot()).active), { timeout: 180000, intervals: [1000] })
+    .toBe(false)
+  const proposals = (await snapshot()).proposals.filter(
+    (proposal) => proposal.conversationId === state.conversationId
+  )
+  await page.evaluate(async ({ bookId, conversationId }) => {
+    const exported = await window.loom.agent.exportLog(bookId, conversationId)
+    if (!exported.ok) throw new Error(exported.message)
+  }, state)
+  const initialLog = JSON.parse(await fs.readFile(join(root, 'export.txt'), 'utf8'))
+  await fs.writeFile(
+    resolve('.test-artifacts/story-real-model.json'),
+    JSON.stringify({ state, proposals, log: initialLog }, null, 2)
+  )
+  expect(proposals).toHaveLength(1)
+  expect(proposals[0].operation).toBe('edit')
+  expect(JSON.parse(proposals[0].content)).toEqual({
+    content: '铜钥匙遇热浮现新纹路。',
+    startChapterId: state.chapterId,
+    endChapterId: null
+  })
+  const final = await page.evaluate(
+    async ({ state, proposal }) => {
+      const accepted = await window.loom.agent.action(
+        state.bookId,
+        proposal.id,
+        'apply',
+        proposal.candidateHash
+      )
+      if (!accepted.ok) throw new Error(accepted.message)
+      const reread = await window.loom.read(state.bookId, state.documentId)
+      if (!reread.ok) throw new Error(reread.message)
+      const exported = await window.loom.agent.exportLog(state.bookId, state.conversationId)
+      if (!exported.ok) throw new Error(exported.message)
+      return { document: reread.value.document, export: exported.value }
+    },
+    { state, proposal: proposals[0] }
+  )
+  expect(final.document.content).toBe(proposals[0].content)
+  const log = JSON.parse(await fs.readFile(join(root, 'export.txt'), 'utf8'))
+  await fs.writeFile(
+    resolve('.test-artifacts/story-real-model.json'),
+    JSON.stringify({ state, final, log }, null, 2)
+  )
+  expect(log.log.state).toBe('completed')
+  if (process.env.LOOM_STORY_MODEL_PROFILE) expect(log.log.model).toMatch(/gemini/i)
+  expect(log.log.tools.map((tool: { call: { name: string } }) => tool.call.name)).toEqual([
+    'read',
+    'read',
+    'edit'
+  ])
+  expect(JSON.parse(log.log.tools[0].call.arguments)).toMatchObject({
+    path: 'book/',
+    query: '铜钥匙'
+  })
+  expect(log.log.tools[1].result.complete).toBe(true)
+})
 async function newDocument(title: string): Promise<void> {
   await page.getByRole('button', { name: '新建条目', exact: true }).click()
   await page.getByRole('textbox', { name: '新标题' }).fill(title)

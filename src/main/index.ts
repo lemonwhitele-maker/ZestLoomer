@@ -5,10 +5,12 @@ import { DocumentStore, atomicWrite } from './documents'
 import { counters } from '../shared/perf'
 import { initialContent } from '../shared/templates'
 import { readTextImport } from './imports'
-import { AgentService } from './agent/service'
+import { AgentService, instructions } from './agent/service'
+import { HeavySettingsStore } from './agent/heavySettings'
 import { ApiRuntime } from './agent/runtime'
 import { AgentConfigStore } from './agent/config'
 import { ToolApiService } from './toolApi'
+import { prepareLibrary, libraryBooks, locateBooks, storedBook } from './bookLibrary'
 import loomIcon from '../shared/assets/loom-logo.png?asset'
 import {
   defaultPreferences,
@@ -17,11 +19,15 @@ import {
   type WorkspacePreferences
 } from '../shared/documents'
 
-app.setName('Loom')
-if (process.platform === 'win32') app.setAppUserModelId('io.loom.novelworkspace')
-// Keep the new application's configuration separate from the reference app.
-app.setPath('userData', process.env.LOOM_USER_DATA || join(app.getPath('appData'), 'Loom'))
+app.setName('Loom Preview')
+if (process.platform === 'win32') app.setAppUserModelId('io.loom.novelworkspace.preview')
+// Preview uses its own profile and ignores the production application's environment and pointers.
+app.setPath(
+  'userData',
+  process.env.LOOM_PREVIEW_USER_DATA || join(app.getPath('appData'), 'Loom Preview')
+)
 const store = new DocumentStore()
+let heavySettings: HeavySettingsStore
 let agentConfig: AgentConfigStore
 let toolApi: ToolApiService
 let boundAgentBook: string | null = null
@@ -32,7 +38,8 @@ const agent = new AgentService(
     if (window && !window.isDestroyed() && event.bookId === boundAgentBook)
       window.webContents.send('loom:agent:event', event)
   },
-  (user, assistant, signal) => toolApi.generateTitle(user, assistant, signal)
+  (user, assistant, signal) => toolApi.generateTitle(user, assistant, signal),
+  async () => (await heavySettings.read()).settings
 )
 let books: Book[] = []
 let preferences: WorkspacePreferences = structuredClone(defaultPreferences)
@@ -41,9 +48,15 @@ let configQueue = Promise.resolve()
 let window: BrowserWindow | null = null
 let closing = false
 let closeRequested = false
-const configPath = () => join(app.getPath('userData'), 'workspace.json')
+let libraryRoot: string
+let libraryConfig: string
+const configPath = () => join(libraryConfig, 'workspace.json')
 function persist(): Promise<void> {
-  const text = JSON.stringify({ books, preferences }, null, 2)
+  const text = JSON.stringify(
+    { books: books.map((book) => storedBook(libraryRoot, book)), preferences },
+    null,
+    2
+  )
   const current = configQueue.catch(() => {}).then(() => atomicWrite(configPath(), text))
   configQueue = current
   return current
@@ -71,6 +84,12 @@ function register(name: string, handler: (...args: any[]) => unknown): void {
       return {
         ok: false,
         code: (error as { code?: string }).code || 'IO',
+        ...((error as { binding?: unknown }).binding
+          ? {
+              binding: (error as { binding: import('../shared/storyLinks').ChapterOutlinePair })
+                .binding
+            }
+          : {}),
         message: (error as Error).message || '操作失败，原内容已保留'
       }
     }
@@ -140,6 +159,11 @@ function registerHandlers(): void {
     assertAgentBook(bookId)
     return agent.action(bookId, id, action, hash)
   })
+  register('agent:heavy-settings', async () => ({ ...(await heavySettings.read()), instructions }))
+  register('agent:heavy-save', async (settings) => ({
+    ...(await heavySettings.save(settings)),
+    instructions
+  }))
   register('agent:config', () => agentConfig.get())
   register('agent:configure', (input) => agentConfig.save(input))
   register('agent:test', (input, mode) => agentConfig.test(input, mode))
@@ -172,12 +196,17 @@ function registerHandlers(): void {
       : readTextImport(selected.filePaths[0], encoding)
   })
   register('create-book', async (title: string) => {
-    const parent = await chooseDirectory('选择保存新作品的位置')
-    return parent ? remember(await store.createBook(parent, title)) : null
+    return remember(await store.createBook(libraryRoot, title))
   })
   register('open-book', async () => {
     const root = await chooseDirectory('打开 Loom 作品目录（包含 book.json）')
     return root ? remember(await store.openBook(root)) : null
+  })
+  register('rename-book', async (bookId: string, title: string) => {
+    const book = await store.renameBook(bookId, title)
+    books = books.map((item) => (item.id === book.id ? book : item))
+    await persist()
+    return book
   })
   register('list', (bookId) => store.orderedList(bookId))
   register('create', (bookId, kind, title, template = 'basic') => {
@@ -185,6 +214,16 @@ function registerHandlers(): void {
     return store.create(bookId, kind, title, { content: initialContent(kind, template) })
   })
   register('read', (bookId, id) => store.read(bookId, id))
+  register('story:bindings', (bookId) => store.chapterOutlineBindings(bookId))
+  register('story:match', (bookId, revision) => store.matchChapterOutlines(bookId, revision))
+  register('story:bind', (input) => store.setChapterOutlineBinding(input))
+  register('story:read', (bookId, ids) => {
+    if (!Array.isArray(ids) || ids.length > 200) throw new Error('文档 ID 列表无效')
+    return store.readWithBindings(bookId, ids, true)
+  })
+  register('story:foreshadows', (bookId, offset, limit) =>
+    store.foreshadowRows(bookId, offset, limit)
+  )
   register('save', (input) => store.save(input))
   register('draft', (bookId, id, draft) => store.writeDraft(bookId, id, draft))
   register('trash', (bookId, id, version) => store.trash(bookId, id, version))
@@ -321,7 +360,7 @@ function registerHandlers(): void {
 function createWindow(): void {
   closing = false
   window = new BrowserWindow({
-    title: 'Loom',
+    title: 'Loom Preview',
     icon: loomIcon,
     width: 1380,
     height: 900,
@@ -363,8 +402,12 @@ if (!app.requestSingleInstanceLock()) app.quit()
 else
   void app.whenReady().then(async () => {
     await fs.mkdir(app.getPath('userData'), { recursive: true })
-    agentConfig = new AgentConfigStore(join(app.getPath('userData'), 'agent.json'))
-    toolApi = new ToolApiService(join(app.getPath('userData'), 'tool-api.json'), agentConfig)
+    libraryRoot = process.env.LOOM_PREVIEW_BOOKLIST || join(app.getPath('userData'), 'BookList')
+    await fs.mkdir(libraryRoot, { recursive: true })
+    libraryConfig = await prepareLibrary(libraryRoot, app.getPath('userData'))
+    heavySettings = new HeavySettingsStore(libraryRoot)
+    agentConfig = new AgentConfigStore(join(libraryConfig, 'agent.json'))
+    toolApi = new ToolApiService(join(libraryConfig, 'tool-api.json'), agentConfig)
     try {
       await agentConfig.load()
     } catch {
@@ -375,21 +418,35 @@ else
     } catch {
       errors.push('工具 API 配置读取失败，请在 AI 设置中重新配置。')
     }
+    let previousBooks: Book[] = []
+    let workspaceReadable = true
     try {
       const config = JSON.parse(await fs.readFile(configPath(), 'utf8'))
       preferences = { ...defaultPreferences, ...config.preferences }
       if (!['light', 'dark', 'system'].includes(preferences.theme || ''))
         preferences.theme = 'system'
-      for (const previous of config.books || []) {
+      previousBooks = config.books || []
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        workspaceReadable = false
+        errors.push('工作区设置读取失败，作品文件未受影响。')
+      }
+    }
+    try {
+      for (const previous of locateBooks(
+        libraryRoot,
+        previousBooks,
+        await libraryBooks(libraryRoot)
+      )) {
         try {
           books.push(await store.openBook(previous.root))
         } catch {
           errors.push(`无法打开「${previous.title}」，可用“打开作品”重新定位。`)
         }
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-        errors.push('工作区设置读取失败，作品文件未受影响。')
+      if (workspaceReadable) await persist()
+    } catch {
+      errors.push('书库扫描或列表保存失败，请检查书库目录权限与 book.json。')
     }
     registerHandlers()
     createWindow()

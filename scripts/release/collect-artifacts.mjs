@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const { version } = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'))
-const filename = `Loom-${version}-win-x64-setup.exe`
+const filename = `LoomPreview-${version}-win-x64-setup.exe`
 const destination = resolve(root, '../安装包', `Loom-${version}`)
 await mkdir(destination, { recursive: true })
 await copyFile(resolve(root, 'dist', filename), resolve(destination, filename))

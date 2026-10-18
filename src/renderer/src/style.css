@@ -824,3 +824,8 @@ h2 {
   max-height: 88vh;
   overflow: auto;
 }
+
+.foreshadow-navigation {
+  padding: 8px 28px 0;
+  justify-content: flex-end;
+}

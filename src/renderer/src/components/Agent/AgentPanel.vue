@@ -55,9 +55,6 @@ const effectiveProfile = computed(() =>
     ? props.profiles.find((p) => p.id === current.value?.profileId)
     : defaultProfile.value
 )
-const selectionTooLong = computed(
-  () => includeDocument.value && includeSelection.value && props.selectionText.length > 8000
-)
 function trackScroll(): void {
   const el = messagesElement.value
   if (el) followLatest.value = el.scrollHeight - el.scrollTop - el.clientHeight < 64
@@ -132,7 +129,6 @@ function send(): void {
     !current.value.archived &&
     !props.busy &&
     !composing.value &&
-    !selectionTooLong.value &&
     effectiveProfile.value
   )
     emit('send', current.value.id, input.value.trim(), {
@@ -303,6 +299,10 @@ defineExpose({
               文档：{{ m.context.document.title }} · 保存版本
               {{ m.context.document.version.slice(0, 12) }}
             </p>
+            <details v-if="m.context.workspace.heavySnapshot">
+              <summary>超重agent 本轮资料与配置快照</summary>
+              <pre>{{ JSON.stringify(m.context.workspace.heavySnapshot, null, 2) }}</pre>
+            </details>
             <pre v-if="m.context.workspace.selection">{{ m.context.workspace.selection.text }}</pre>
             <p v-else>未附带选区</p>
             <p>文档位置与选区在发送时固定；历史讨论按容量整理，Agent 可按任务读取书内资料。</p>
@@ -396,9 +396,7 @@ defineExpose({
             : '尚未配置，请打开 AI 设置'
         }}
       </p>
-      <p v-if="selectionTooLong" class="error-text">
-        选区超过 8000 字符，请缩小选区或取消附带选区。
-      </p>
+
       <div v-if="current && !input" class="starters">
         <button
           type="button"
@@ -443,13 +441,7 @@ defineExpose({
           v-else
           class="primary"
           :disabled="
-            !current ||
-            current.archived ||
-            !input.trim() ||
-            busy ||
-            composing ||
-            selectionTooLong ||
-            !effectiveProfile
+            !current || current.archived || !input.trim() || busy || composing || !effectiveProfile
           "
         >
           发送

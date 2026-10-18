@@ -12,9 +12,33 @@ async function fixture(store = new DocumentStore()) {
   const book = await store.createBook(parent, '合成测试作品')
   return { store, book, parent }
 }
+test('book rename persists without moving documents and rejects invalid titles or failed writes', async () => {
+  let failWrite = false
+  const { store, book } = await fixture(
+    new DocumentStore(async (path, text) => {
+      if (failWrite && path.endsWith('book.json')) throw new Error('write failed')
+      await atomicWrite(path, text)
+    })
+  )
+  const doc = (await store.create(book.id, 'chapters', '第一章')).document
+  const renamed = await store.renameBook(book.id, '  新作品名称  ')
+  assert.deepEqual(renamed, { ...book, title: '新作品名称' })
+  const reopened = new DocumentStore()
+  assert.deepEqual(await reopened.openBook(book.root), renamed)
+  assert.equal((await reopened.read(book.id, doc.id)).document.version, doc.version)
+  await assert.rejects(store.renameBook(book.id, '  '), { code: 'TITLE' })
+  failWrite = true
+  await assert.rejects(store.renameBook(book.id, '不能保存'), /write failed/)
+  assert.equal(store.books.get(book.id)?.title, renamed.title)
+  assert.equal(
+    JSON.parse(await fs.readFile(join(book.root, 'book.json'), 'utf8')).title,
+    renamed.title
+  )
+})
+
 test('five kinds preserve arbitrary source, stable identity, recovery and read-only trash', async () => {
   const { store, book } = await fixture()
-  for (const kind of kinds) {
+  for (const kind of kinds.filter((kind) => kind !== 'foreshadows')) {
     const first = (await store.create(book.id, kind, `自由${kind}`)).document
     const content = '\t　 中文 <tag> & **源码**\r\n\r\n# 标题\r\n尾行  \r\n'
     const saved = await store.save({

@@ -1,6 +1,6 @@
 {
-  "appId": "io.loom.novelworkspace",
-  "productName": "Loom",
+  "appId": "io.loom.novelworkspace.preview",
+  "productName": "Loom Preview",
   "copyright": "See LICENSE and THIRD-PARTY-NOTICES.txt",
   "directories": {
     "output": "dist",
@@ -16,23 +16,26 @@
     { "from": "THIRD-PARTY-NOTICES.txt", "to": "licenses/THIRD-PARTY-NOTICES.txt" }
   ],
   "asar": true,
+  "publish": null,
+  "afterPack": "./scripts/release/after-pack.mjs",
   "electronDist": "node_modules/electron/dist",
   "npmRebuild": false,
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
     "icon": "src/shared/assets/loom-logo.png",
-    "executableName": "Loom",
+    "executableName": "LoomPreview",
     "requestedExecutionLevel": "asInvoker"
   },
   "nsis": {
-    "artifactName": "Loom-${version}-win-${arch}-setup.${ext}",
+    "artifactName": "LoomPreview-${version}-win-${arch}-setup.${ext}",
     "oneClick": false,
     "perMachine": false,
+    "packElevateHelper": false,
     "allowElevation": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Loom",
+    "shortcutName": "Loom Preview",
     "deleteAppDataOnUninstall": false,
     "runAfterFinish": false,
     "installerLanguages": ["zh_CN", "en_US"],
