@@ -1,92 +1,15 @@
-name: Isolated Loom Preview
-
+name: Source snapshot only
 on:
   push:
     branches: ['preview/20261019']
-
 permissions:
   contents: read
-
 concurrency:
   group: loom-preview-20261019
-  cancel-in-progress: false
-
+  cancel-in-progress: true
 jobs:
-  preview:
-    if: github.repository == 'lemonwhitele-maker/ZestLoomer'
-    runs-on: windows-latest
-    timeout-minutes: 35
-    permissions:
-      contents: write
-    env:
-      PREVIEW_SOURCE_SHA: 932b8cc6f4f82acff2c34c86ffe96287da982a4f
-      PREVIEW_TAG: v0.1.0-preview.20261019
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  source-only:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.PREVIEW_SOURCE_SHA }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-      - name: Install locked dependencies
-        run: npm ci
-      - name: Check types
-        run: npm run typecheck
-      - name: Lint
-        run: npm run lint
-      - name: Unit tests
-        run: npm test
-      - name: Audit public source
-        run: node scripts/release/audit-release.mjs .
-      - name: Build isolated Windows installer
-        run: npm run package:win
-      - name: Audit packaged files
-        run: node scripts/release/audit-release.mjs . --packaged
-      - name: Packaged startup, save, import, backup and isolation checks
-        run: node scripts/release/smoke-packaged.mjs
-      - name: Publish only approved preview attachments
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $releaseDir = Join-Path (Split-Path $PWD -Parent) '安装包/Loom-0.1.0-preview.20261019'
-          $allowed = @(
-            'LoomPreview-0.1.0-preview.20261019-win-x64-setup.exe',
-            'LICENSE',
-            'THIRD-PARTY-NOTICES.txt',
-            'INSTALL.md',
-            'CHANGELOG.md',
-            'KNOWN-ISSUES.md',
-            'SHA256SUMS.txt'
-          )
-          $actual = @(Get-ChildItem -LiteralPath $releaseDir -File | Select-Object -ExpandProperty Name)
-          if (@(Compare-Object $allowed $actual).Count -ne 0) { throw 'Unexpected release attachment set' }
-          foreach ($line in Get-Content -LiteralPath (Join-Path $releaseDir 'SHA256SUMS.txt')) {
-            if ($line -notmatch '^([a-f0-9]{64})  (.+)$') { throw 'Invalid checksum format' }
-            $expected = $Matches[1]
-            $fileName = $Matches[2]
-            if ($fileName -notin $allowed -or $fileName -eq 'SHA256SUMS.txt') { throw 'Unexpected checksum entry' }
-            if ((Get-FileHash -LiteralPath (Join-Path $releaseDir $fileName) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Attachment checksum mismatch' }
-          }
-          $payload = @{
-            tag_name = $env:PREVIEW_TAG
-            target_commitish = $env:PREVIEW_SOURCE_SHA
-            name = 'Loom Preview · 2026-10-19'
-            body = (Get-Content -Raw -LiteralPath 'docs/release/CHANGELOG.md') + "`n`nWindows x64 预览包通过本次构建、类型、lint、单元测试、包内启动和数据隔离检查。公开附件仅包含安装包、许可证、说明与校验和。main 与 beta.2 标签及附件保持不变。"
-            draft = $true
-            prerelease = $true
-            make_latest = 'false'
-          }
-          $payloadFile = Join-Path $env:RUNNER_TEMP 'loom-preview-release.json'
-          $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $payloadFile -Encoding utf8NoBOM
-          $created = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" --input $payloadFile | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $created.id) { throw 'Preview release creation failed' }
-          $assets = @($allowed | ForEach-Object { Join-Path $releaseDir $_ })
-          gh release upload $env:PREVIEW_TAG @assets --repo $env:GITHUB_REPOSITORY
-          if ($LASTEXITCODE -ne 0) { throw 'Preview attachment upload failed; release remains draft' }
-          gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$($created.id)" -F draft=false -F prerelease=true -f make_latest=false --jq .html_url
-          if ($LASTEXITCODE -ne 0) { throw 'Preview release publication failed' }
+      - name: Keep source only
+        run: echo 'Source snapshot published; installer publication disabled.'
