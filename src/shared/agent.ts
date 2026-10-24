@@ -1,3 +1,4 @@
+import type { BindingDependency } from './storyLinks'
 import type { DocumentKind, DocumentSnapshot, Result } from './documents'
 
 export type ToolName = 'list_files' | 'read' | 'create' | 'write' | 'edit'
@@ -8,10 +9,21 @@ export interface SourceRef {
   kind: DocumentKind
 }
 export interface AgentWorkspace {
+  cursor?: number
+  editorContent?: string
+  heavySnapshot?: import('./heavyAgent').HeavyTurnSnapshot
   targetRewrite?: boolean
   documentId?: string
   savedVersion?: string
-  selection?: { from: number; to: number; text: string }
+  selection?: {
+    /** Zero-based UTF-16 offsets; to is exclusive. */
+    from: number
+    to: number
+    text: string
+    /** Backend-derived absolute logical lines (1-based, inclusive), not whole-line edit targets. */
+    startLine?: number
+    endLine?: number
+  }
 }
 export interface AgentMessage {
   id: string
@@ -22,6 +34,14 @@ export interface AgentMessage {
   turnId?: string
   outcome?: 'completed' | 'cancelled' | 'failed'
   finalResponse?: string
+  visibility?: 'visible' | 'withdrawn'
+  contextVisibility?: 'active' | 'excluded' | 'withdrawn' | 'superseded'
+  failureProgress?: {
+    completedModelRounds: number
+    executedToolCalls: number
+    createdProposalIds: string[]
+  }
+  supersededBy?: string
   rewrite?: TargetRewriteResult
   context?: { workspace: AgentWorkspace; document?: SourceRef; model: string }
 }
@@ -38,7 +58,8 @@ export interface MemoryItem {
   role: 'user' | 'assistant'
 }
 export interface ConversationMemory {
-  format: 1
+  format: 1 | 2
+  revision?: string
   objective: MemoryItem | null
   preferences: MemoryItem[]
   discussion: MemoryItem[]
@@ -101,6 +122,9 @@ export interface AgentDiagnostic {
   }
 }
 export interface Conversation {
+  historySummaries?: Record<string, HistorySummary>
+  historyDiagnostic?: Record<string, unknown>
+  heavySettings?: import('./heavyAgent').HeavyAgentSettings
   format: 1
   id: string
   bookId: string
@@ -123,6 +147,45 @@ export interface Conversation {
   }
   events?: { turnId: string; type: string; text: string }[]
 }
+export interface HistorySummary {
+  key: string
+  summaryVersion: 1
+  request: string
+  response: string
+  mode: 'excerpt'
+}
+export interface HistoryTurn {
+  turnId: string
+  request: AgentMessage
+  answer?: AgentMessage
+  legacy: boolean
+  completed: boolean
+  path: string
+}
+export interface HistoryProjection {
+  revision: string
+  recentTurns: HistoryTurn[]
+  olderTurns: HistoryTurn[]
+  excludedEvents: { turnId: string; reason: string; request?: string; path: string }[]
+}
+export interface ProposalContext {
+  revision: string
+  index: {
+    id: string
+    title: string
+    turnId: string
+    status: string
+    path: string
+    locations?: { oldLine: number; newLine: number }[]
+  }[]
+  contents: {
+    id: string
+    old_text: string | string[]
+    new_text: string | string[]
+    status: string
+  }[]
+  requiredIds: string[]
+}
 export type ProposalState =
   | 'pending'
   | 'applying'
@@ -133,6 +196,7 @@ export type ProposalState =
   | 'failed'
   | 'undone'
 export interface Proposal {
+  bindingDependencies?: BindingDependency[]
   format: 1
   id: string
   bookId: string
@@ -145,6 +209,8 @@ export interface Proposal {
   before: DocumentSnapshot | null
   content: string
   candidateHash: string
+  /** New chapter edit candidates only; absent on legacy proposals. */
+  paragraphNormalization?: boolean
   sources: SourceRef[]
   reason: string
   state: ProposalState
@@ -204,6 +270,10 @@ export interface AgentSnapshot {
   warnings?: string[]
 }
 export interface AgentAPI {
+  heavySettings(): Promise<Result<import('./heavyAgent').HeavySettingsView>>
+  saveHeavySettings(
+    settings: import('./heavyAgent').HeavyAgentSettings
+  ): Promise<Result<import('./heavyAgent').HeavySettingsView>>
   exportLog(bookId: string, id: string): Promise<Result<{ path: string; complete: boolean } | null>>
   bind(bookId: string): Promise<Result<AgentSnapshot>>
   snapshot(bookId: string): Promise<Result<AgentSnapshot>>

@@ -24,8 +24,9 @@ import {
 import { DocumentSession, type SessionChange } from './session'
 import { counters } from '../../shared/perf'
 import { SessionWordCounts } from './wordCounts'
-import loomLogo from '../../shared/assets/loom-logo.png'
+import zestloomerLogo from '../../shared/assets/zestloomer-logo.png'
 import { knowledgeEntries } from './editorKnowledge'
+import StoryTools from './components/StoryTools.vue'
 import TextEditor from './components/TextEditor.vue'
 import AgentPanel from './components/Agent/AgentPanel.vue'
 import SettingsCenter from './components/SettingsCenter.vue'
@@ -40,11 +41,16 @@ import type { ImportDraft } from '../../shared/imports'
 import type { AgentConfig, AgentSnapshot, AgentWorkspace } from '../../shared/agent'
 import { defaultToolApiConfig, type ToolApiConfig } from '../../shared/toolApi'
 
-const api = window.loom
+const storyTools = ref<InstanceType<typeof StoryTools>>()
+const api = window.zestloomer
 const books = ref<Book[]>([])
 const currentBook = ref<Book | null>(null)
 const kind = ref<DocumentKind>('chapters')
 const inTrash = ref(false)
+const foreshadowSource = ref(false)
+const foreshadowTable = computed(
+  () => kind.value === 'foreshadows' && !inTrash.value && !foreshadowSource.value
+)
 const documents = ref<DocumentMeta[]>([])
 const knowledgeContent = ref<Record<string, string>>({})
 const highlightEntries = computed(() => knowledgeEntries(documents.value, knowledgeContent.value))
@@ -133,6 +139,7 @@ const resizing = ref(false)
 const agentShown = computed(() => preferences.agentVisible && !preferences.focusMode)
 const listShown = computed(
   () =>
+    !foreshadowTable.value &&
     preferences.listVisible &&
     !preferences.focusMode &&
     !(agentShown.value && viewportWidth.value < 1180)
@@ -200,7 +207,7 @@ const referenceOpen = ref(false)
 const referenceQuery = ref('')
 const selectedText = ref('')
 const conflict = ref<DocumentSnapshot | null>(null)
-const modal = ref<'book' | 'document' | 'trash' | null>(null)
+const modal = ref<'book' | 'renameBook' | 'document' | 'trash' | null>(null)
 let modalPreviousFocus: HTMLElement | null = null
 function activeDialog(): HTMLElement | undefined {
   return [...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
@@ -408,6 +415,7 @@ const orderable = computed(
 const referenceType: Record<DocumentKind, string> = {
   chapters: 'chapter',
   notes: 'note',
+  foreshadows: 'foreshadow',
   characters: 'character',
   settings: 'setting',
   outlines: 'outline'
@@ -585,6 +593,8 @@ async function sendAgent(
     if (!options.document) {
       delete workspace.documentId
       delete workspace.savedVersion
+      delete workspace.cursor
+      delete workspace.editorContent
     }
     if (!options.document || !options.selection) delete workspace.selection
     resetAgentText()
@@ -762,11 +772,19 @@ async function refreshStats(): Promise<void> {
   if (currentBook.value?.id === bookId) bookStats.value = value
 }
 async function flushCurrent(): Promise<boolean> {
+  if (storyTools.value && !storyTools.value.settled()) {
+    message.value = '请先保存或取消伏笔表格中的修改。'
+    return false
+  }
   if (!session.value || (await session.value.settle())) return true
   message.value = '当前内容尚未保存，请先处理保存失败或版本冲突。'
   return false
 }
 async function flushAll(): Promise<boolean> {
+  if (storyTools.value && !storyTools.value.settled()) {
+    message.value = '窗口保持打开：请先保存或取消伏笔表格中的修改。'
+    return false
+  }
   let okay = true
   for (const item of sessions.values())
     if (!(await item.settle())) {
@@ -826,6 +844,7 @@ async function chooseFirst(): Promise<void> {
 }
 async function switchKind(next: DocumentKind, trash = false): Promise<void> {
   if (!(await flushCurrent())) return
+  foreshadowSource.value = false
   kind.value = next
   inTrash.value = trash
   filter.value = ''
@@ -866,15 +885,19 @@ async function switchBook(book: Book): Promise<void> {
   }
   await savePreferences()
 }
-function askNew(mode: 'book' | 'document'): void {
+function askNew(mode: 'book' | 'renameBook' | 'document'): void {
   message.value = ''
+  if (mode === 'document' && kind.value === 'foreshadows' && !inTrash.value) {
+    void storyTools.value?.addRow()
+    return
+  }
   if (mode === 'document' && kind.value === 'chapters') {
     createAttempt = null
     chapterCreateOpen.value = true
     return
   }
   modal.value = mode
-  newTitle.value = ''
+  newTitle.value = mode === 'renameBook' ? currentBook.value?.title || '' : ''
   templateChoice.value = 'basic'
   void nextTick(() => modalInput.value?.focus())
 }
@@ -1208,6 +1231,10 @@ async function submitModal(): Promise<void> {
         books.value.unshift(book)
         await switchBook(book)
       }
+    } else if (modal.value === 'renameBook' && currentBook.value) {
+      const book = unwrap(await api.renameBook(currentBook.value.id, newTitle.value))
+      books.value = books.value.map((item) => (item.id === book.id ? book : item))
+      currentBook.value = book
     } else if (modal.value === 'document' && currentBook.value) {
       const created = unwrap(
         await api.create(currentBook.value.id, kind.value, newTitle.value, templateChoice.value)
@@ -1457,7 +1484,7 @@ onMounted(async () => {
     const boot = unwrap(await api.bootstrap())
     counters.enabled = boot.performanceEnabled === true
     if (counters.enabled)
-      Object.defineProperty(window, '__loomPerfSnapshot', {
+      Object.defineProperty(window, '__zestloomerPerfSnapshot', {
         configurable: true,
         value: () => counters.snapshot()
       })
@@ -1494,8 +1521,14 @@ onBeforeUnmount(() => {
   >
     <nav v-show="!preferences.focusMode" class="sidebar" aria-label="创作分区">
       <div class="brand">
-        <img class="brand-logo" :src="loomLogo" alt="Loom Logo" width="44" height="44" />
-        <div class="brand-name">Loom <span>织机</span></div>
+        <img
+          class="brand-logo"
+          :src="zestloomerLogo"
+          alt="ZestLoomer Logo"
+          width="44"
+          height="44"
+        />
+        <div class="brand-name">ZestLoomer</div>
       </div>
       <div class="book-controls">
         <select
@@ -1518,6 +1551,9 @@ onBeforeUnmount(() => {
           ><button :disabled="busy" @click="openBook">打开作品</button>
         </div>
         <div class="row book-tools">
+          <button :disabled="busy || !currentBook" @click="askNew('renameBook')">
+            修改作品名称
+          </button>
           <button :disabled="busy || !currentBook" @click="showQuickOpen">快速打开</button>
           <button :disabled="busy" @click="showImport">导入</button>
         </div>
@@ -1589,12 +1625,16 @@ onBeforeUnmount(() => {
         <label
           ><input
             type="checkbox"
-            :checked="visibleDocuments.every((doc) => selectedIds.includes(doc.id))"
+            :checked="
+              visibleDocuments
+                .filter((doc) => !doc.readonlyExample)
+                .every((doc) => selectedIds.includes(doc.id))
+            "
             :disabled="busy"
             aria-label="选择当前列表全部文档"
             @change="
               selectedIds = ($event.target as HTMLInputElement).checked
-                ? visibleDocuments.map((doc) => doc.id)
+                ? visibleDocuments.filter((doc) => !doc.readonlyExample).map((doc) => doc.id)
                 : []
             "
           />多选</label
@@ -1620,7 +1660,7 @@ onBeforeUnmount(() => {
           @dragend="dragId = ''"
         >
           <input
-            v-if="!inTrash"
+            v-if="!inTrash && !doc.readonlyExample"
             class="entry-select"
             type="checkbox"
             :checked="selectedIds.includes(doc.id)"
@@ -1676,6 +1716,7 @@ onBeforeUnmount(() => {
       <header class="workspace-header">
         <div class="row">
           <button
+            v-if="!foreshadowTable"
             aria-label="切换文档列表"
             :title="
               agentShown && viewportWidth < 1180 ? '显示文档列表并收起 Agent' : '显示或收起文档列表'
@@ -1703,12 +1744,49 @@ onBeforeUnmount(() => {
         <span>{{ message }}</span
         ><button aria-label="关闭提示" @click="message = ''">×</button>
       </div>
-      <template v-if="current">
+      <div v-if="kind === 'foreshadows' && currentBook" class="row foreshadow-navigation">
+        <button
+          v-if="foreshadowSource || inTrash"
+          @click="guarded(() => switchKind('foreshadows'))"
+        >
+          返回伏笔表格
+        </button>
+        <button v-else @click="guarded(() => switchKind('foreshadows', true))">回收站</button>
+      </div>
+      <StoryTools
+        v-if="currentBook && !inTrash"
+        v-show="!foreshadowSource || kind !== 'foreshadows'"
+        :key="currentBook.id"
+        ref="storyTools"
+        :book-id="currentBook.id"
+        :kind="kind"
+        :document-id="current?.document.id"
+        :documents="documents"
+        @open="(id) => guarded(() => openDocument(id))"
+        @source="
+          (id) =>
+            guarded(async () => {
+              if (!(await flushCurrent())) return
+              await openDocument(id)
+              foreshadowSource = true
+            })
+        "
+        @saved="
+          (id) =>
+            guarded(async () => {
+              await reloadList()
+              if (current?.document.id === id) await openDocument(id, false)
+            })
+        "
+      />
+      <template v-if="current && !foreshadowTable">
         <div class="document-heading">
           <input
             :value="current.title"
             aria-label="文档标题"
-            :disabled="Boolean(current.document.trashedAt) || busy"
+            :disabled="
+              Boolean(current.document.trashedAt || current.document.readonlyExample) || busy
+            "
             maxlength="200"
             @input="editTitle"
           />
@@ -1716,9 +1794,18 @@ onBeforeUnmount(() => {
             <button v-if="!current.document.trashedAt" :disabled="busy" @click="copyCurrent">
               复制
             </button>
-            <button :disabled="busy" @click="showHistory">历史版本</button>
+            <button
+              :disabled="busy || Boolean(current.document.readonlyExample)"
+              @click="showHistory"
+            >
+              历史版本
+            </button>
             <button :disabled="busy" @click="exportCurrent">导出</button
-            ><button v-if="!current.document.trashedAt" :disabled="busy" @click="modal = 'trash'">
+            ><button
+              v-if="!current.document.trashedAt"
+              :disabled="busy || Boolean(current.document.readonlyExample)"
+              @click="modal = 'trash'"
+            >
               移入回收站</button
             ><button v-else class="primary" :disabled="busy" @click="restore">恢复文档</button>
           </div>
@@ -1765,21 +1852,32 @@ onBeforeUnmount(() => {
         </div>
         <div class="editor-toolbar">
           <div class="row">
-            <button :disabled="busy || Boolean(current.document.trashedAt)" @click="editor?.undo()">
+            <button
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
+              @click="editor?.undo()"
+            >
               撤销</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="editor?.redo()"
             >
               重做</button
             ><span class="separator" /><button @click="editor?.search()">查找</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="editor?.replace()"
             >
               替换</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="referenceOpen = true"
             >
               插入引用
@@ -1794,13 +1892,20 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <span class="muted">{{
-            kind === 'chapters' ? '纯文本 · 双换行 · 首行缩进两字' : 'Markdown 源码 · 不渲染'
+            kind === 'chapters'
+              ? '纯文本 · 双换行 · 首行缩进两字'
+              : kind === 'foreshadows'
+                ? '伏笔 JSON 原文'
+                : 'Markdown 源码 · 不渲染'
           }}</span>
         </div>
         <div v-if="currentError" class="notice error" role="alert">
           <span>{{ currentError }}</span
           ><button v-if="current.status === 'conflict'" @click="compareDisk">比较磁盘版本</button
           ><button v-else @click="flushCurrent">重试保存</button>
+        </div>
+        <div v-if="current.document.readonlyExample" class="notice">
+          只读填写示例，不属于本书事实。可复制为普通资料后编辑。
         </div>
         <div v-if="current.document.trashedAt" class="trash-banner">
           此文档已移入回收站，引用仍有效。恢复后可继续编辑。
@@ -1810,7 +1915,7 @@ onBeforeUnmount(() => {
           :session="current"
           :preferences="preferences"
           :tick="tick"
-          :locked="busy"
+          :locked="busy || Boolean(current.document.readonlyExample)"
           :knowledge-entries="highlightEntries"
           :highlight-enabled="highlightEnabled"
           @save="flushCurrent"
@@ -1827,8 +1932,8 @@ onBeforeUnmount(() => {
           ><span>Ctrl+S 保存 · Ctrl+F 查找 · Ctrl+点击引用跳转</span>
         </footer>
       </template>
-      <section v-else class="empty">
-        <span class="eyebrow">LOOM / {{ labels[kind] }}</span>
+      <section v-else-if="!foreshadowTable || !currentBook" class="empty">
+        <span class="eyebrow">ZestLoomer / {{ labels[kind] }}</span>
         <h1>
           {{
             currentBook ? (inTrash ? '每一个想法都可以找回' : '留一页给新的想法') : '从一部作品开始'
@@ -1904,7 +2009,13 @@ onBeforeUnmount(() => {
         role="dialog"
         aria-modal="true"
         :aria-label="
-          modal === 'trash' ? '移入回收站确认' : modal === 'book' ? '新建作品' : '新建条目'
+          modal === 'trash'
+            ? '移入回收站确认'
+            : modal === 'renameBook'
+              ? '修改作品名称'
+              : modal === 'book'
+                ? '新建作品'
+                : '新建条目'
         "
         @submit.prevent="submitModal"
       >
@@ -1914,7 +2025,9 @@ onBeforeUnmount(() => {
               ? '移入回收站？'
               : modal === 'book'
                 ? '新建作品'
-                : '新建' + labels[kind]
+                : modal === 'renameBook'
+                  ? '修改作品名称'
+                  : '新建' + labels[kind]
           }}
         </h2>
         <template v-if="modal === 'trash'"
@@ -1952,7 +2065,7 @@ onBeforeUnmount(() => {
             :disabled="busy || (modal !== 'trash' && !newTitle.trim())"
             type="submit"
           >
-            {{ modal === 'trash' ? '确认回收' : '创建' }}
+            {{ modal === 'trash' ? '确认回收' : modal === 'renameBook' ? '保存' : '创建' }}
           </button>
         </div>
       </form>

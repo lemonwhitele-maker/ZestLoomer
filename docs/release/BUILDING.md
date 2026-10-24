@@ -1,13 +1,16 @@
-# 从源码构建
+# 开发构建
 
-Windows x64，Node.js 22，npm。
+Windows、Node.js 22，在项目目录执行：
 
 ```powershell
 npm ci
 npm run typecheck
 npm run lint
 npm test
-npm run package:win
+npm run build
+npm run dev
 ```
 
-安装包生成在 dist；随附材料整理到源码目录旁的“安装包”目录。运行依赖和 Electron 版本按 package-lock.json 锁定。窗口测试需要正常桌面环境，可运行 npm run test:e2e。测试输出只用于本地检查，不随发行材料分发。
+`build` 生成本地 Electron 运行所需代码。`npm run test:e2e` 运行桌面测试，使用独立合成书库；真实模型测试默认跳过，需单独明确配置。
+
+本次仅提供源码。`electron-builder.json`、`package:win` 及历史发布脚本仍保留 Loom 安装标识和名称；自行使用前需单独检查与验证。本分支不包含自动打包发布工作流。

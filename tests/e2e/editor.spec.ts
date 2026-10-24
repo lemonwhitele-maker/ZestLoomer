@@ -18,9 +18,10 @@ async function launch(rendererUrl?: string): Promise<void> {
       (entry): entry is [string, string] => typeof entry[1] === 'string'
     )
   )
-  env.LOOM_USER_DATA = profile
-  env.LOOM_TEST_HIDDEN = '1'
-  env.LOOM_PERF = '1'
+  env.ZESTLOOMER_USER_DATA = profile
+  env.ZESTLOOMER_BOOKLIST = root
+  env.ZESTLOOMER_TEST_HIDDEN = '1'
+  env.ZESTLOOMER_PERF = '1'
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
   if (rendererUrl) env.ELECTRON_RENDERER_URL = rendererUrl
@@ -62,11 +63,34 @@ test.afterEach(async () => {
   devServer = undefined
 })
 
+test('new books show immutable examples and editable copies', async () => {
+  const examples = (await docs(true)).filter((d) => d.readonlyExample)
+  expect(examples).toHaveLength(2)
+  for (const kind of ['characters', 'settings'] as const) {
+    const example = examples.find((d) => d.kind === kind)!
+    await page.getByRole('button', { name: kind === 'characters' ? /^人物/ : /^设定/ }).click()
+    await page.locator('.entry-title').filter({ hasText: example.title }).click()
+    await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toBeDisabled()
+    await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false')
+    await expect(page.getByRole('button', { name: '移入回收站', exact: true })).toBeDisabled()
+    if (kind === 'characters') expect((await disk(example.id)).content).toContain('### 经典发言')
+    const version = (await disk(example.id)).version
+    await page.getByRole('button', { name: '复制', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toBeEnabled()
+    await enterText('复制后可以填写自己的资料。')
+    const copy = (await docs()).find((d) => d.kind === kind)!
+    expect(copy.readonlyExample).toBeUndefined()
+    await expect.poll(async () => (await disk(copy.id)).content).toBe('复制后可以填写自己的资料。')
+    expect((await disk(example.id)).version).toBe(version)
+  }
+})
+
 test('templates and Agent API flow preserve source notes, require review, survive restart and cancel safely', async () => {
   await page.getByRole('button', { name: /^人物/ }).click()
   await newDocument('林舟')
-  const person = (await docs()).find((d) => d.kind === 'characters')!
+  const person = (await docs()).find((d) => d.kind === 'characters' && !d.readonlyExample)!
   expect((await disk(person.id)).content).toContain('### 核心定位')
+  expect((await disk(person.id)).content).toContain('### 经典发言')
   expect((await disk(person.id)).content).not.toContain('confirmed')
   await page.getByRole('button', { name: '新建条目', exact: true }).click()
   await page.getByRole('textbox', { name: '新标题' }).fill('自由人物')
@@ -150,10 +174,12 @@ test('templates and Agent API flow preserve source notes, require review, surviv
     await page.getByRole('button', { name: '保存 Agent 配置' }).click()
     await expect(page.locator('.settings-footer [role="status"]')).toContainText('Agent 配置已保存')
     await page.getByRole('button', { name: '关闭', exact: true }).click()
-    const savedConfig = JSON.parse(await fs.readFile(join(profile, 'agent.json'), 'utf8'))
+    const savedConfig = JSON.parse(
+      await fs.readFile(join(root, '.zestloomer', 'agent.json'), 'utf8')
+    )
     expect(savedConfig.profiles[0].encryptedKey).toBeTruthy()
     expect(JSON.stringify(savedConfig)).not.toContain('synthetic-local-test-key')
-    const publicConfig = await page.evaluate(() => window.loom.agent.config())
+    const publicConfig = await page.evaluate(() => window.zestloomer.agent.config())
     expect(publicConfig.ok && publicConfig.value.hasKey).toBe(true)
     expect(JSON.stringify(publicConfig)).not.toContain('synthetic-local-test-key')
     await page.getByRole('button', { name: /^Agent 对话/ }).click()
@@ -197,8 +223,8 @@ test('templates and Agent API flow preserve source notes, require review, surviv
       page.evaluate(
         () =>
           (
-            window as unknown as { __loomPerfSnapshot: () => { proposalDiffCount: number } }
-          ).__loomPerfSnapshot().proposalDiffCount
+            window as unknown as { __zestloomerPerfSnapshot: () => { proposalDiffCount: number } }
+          ).__zestloomerPerfSnapshot().proposalDiffCount
       )
     const beforeStreaming = await diffCount()
     hanging!.write(
@@ -302,7 +328,7 @@ test('target rewrite checkbox sends structured goals with final-response history
       targetRewrite: { target: '继续讨论方案二' }
     })
     const context = page.locator('.sent-context').last()
-    await context.locator('summary').click()
+    await context.locator(':scope > summary').click()
     await expect(context).toContainText('使用 1 轮有效对话')
     await expect(context).toContainText('继续讨论方案二')
     await setRewrite(false)
@@ -323,20 +349,21 @@ async function enterText(text: string): Promise<void> {
   await page.keyboard.press('Control+s')
   await expect(page.locator('.save-state')).toHaveText('已保存')
 }
-async function docs(): Promise<DocumentMeta[]> {
-  return page.evaluate(async () => {
-    const boot = await window.loom.bootstrap()
+// Existing scenarios count author documents; examples have their own lifecycle test.
+async function docs(includeExamples = false): Promise<DocumentMeta[]> {
+  return page.evaluate(async (include) => {
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const result = await window.loom.list(boot.value.preferences.lastBookId!)
+    const result = await window.zestloomer.list(boot.value.preferences.lastBookId!)
     if (!result.ok) throw new Error(result.message)
-    return result.value
-  })
+    return result.value.filter((doc) => include || !doc.readonlyExample)
+  }, includeExamples)
 }
 async function disk(id: string): Promise<DocumentSnapshot> {
   return page.evaluate(async (docId) => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const read = await window.loom.read(boot.value.preferences.lastBookId!, docId)
+    const read = await window.zestloomer.read(boot.value.preferences.lastBookId!, docId)
     if (!read.ok) throw new Error(read.message)
     return read.value.document
   }, id)
@@ -365,7 +392,8 @@ test('reading positions remember each chapter across sections, empty sections an
   await enterText(Array.from({ length: 150 }, (_, i) => `第二章第${i}段正文。`).join('\n\n'))
   const secondTop = await readAt(3000)
   expect(Math.abs(secondTop - 3000)).toBeLessThan(100)
-  await page.getByRole('button', { name: /^人物/ }).click()
+  // Characters and settings now contain immutable examples; notes is still empty.
+  await page.getByRole('button', { name: /^速记/ }).click()
   await expect(page.locator('.cm-scroller')).toHaveCount(0)
   const secondChapter = (await docs()).find((doc) => doc.title === '第二章位置')!
   expect(
@@ -374,6 +402,7 @@ test('reading positions remember each chapter across sections, empty sections an
       return JSON.parse(localStorage.getItem(key)!).scrollTop
     }, secondChapter.id)
   ).toBeCloseTo(secondTop, 0)
+  await page.getByRole('button', { name: /^人物/ }).click()
   await newDocument('人物资料')
   await enterText(Array.from({ length: 90 }, (_, i) => `人物资料第${i}行`).join('\n'))
   const personTop = await readAt(900)
@@ -424,7 +453,21 @@ test('proposal apply and undo preserve reading position and settings merge parag
                   function: {
                     name: count === 0 ? 'read' : 'edit',
                     arguments: JSON.stringify(
-                      count === 0 ? { path } : { path, edits: [{ oldText, newText }] }
+                      count === 0
+                        ? { path, startLine: 201, endLine: 205 }
+                        : {
+                            path,
+                            baseVersion: JSON.parse(
+                              payload.messages.filter((m: any) => m.role === 'tool').at(-1).content
+                            ).version,
+                            edits: [
+                              {
+                                mode: 'replace',
+                                target: { kind: 'lines', startLine: 201, endLine: 205 },
+                                newText: newText.replaceAll('\n\n', '\n')
+                              }
+                            ]
+                          }
                     )
                   }
                 }
@@ -443,6 +486,9 @@ test('proposal apply and undo preserve reading position and settings merge parag
     await page.getByRole('button', { name: '发送', exact: true }).click()
     await expect(page.getByRole('button', { name: '接受修改', exact: true })).toBeEnabled()
     await expect(page.locator('.proposal-diff')).toHaveCount(2)
+    await expect(page.locator('.proposal-card')).toContainText(
+      '已统一候选正文的段落换行，请一并审阅。'
+    )
     await page.getByRole('button', { name: '设置', exact: true }).click()
     await page.getByRole('tab', { name: /Agent 偏好/ }).click()
     await page.getByRole('checkbox', { name: '合并替换前后对照' }).check()
@@ -468,6 +514,87 @@ test('proposal apply and undo preserve reading position and settings merge parag
     await launch()
     await expect(page.locator('.proposal-diff')).toHaveCount(1)
     await expect.poll(scroll).toBeCloseTo(readingTop, 0)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('line-protocol continuation previews real separators and waits for review before apply and undo', async () => {
+  await newDocument('行号续写验收')
+  const source = '他推开门，屋内没有人。'
+  await enterText(source)
+  const chapter = (await docs()).find((doc) => doc.title === '行号续写验收')!
+  const path = `book/chapters/${chapter.id}.txt`
+  const server = createHttpServer(async (request, response) => {
+    let raw = ''
+    for await (const chunk of request) raw += chunk
+    const payload = JSON.parse(raw)
+    const results = payload.messages.filter((message: any) => message.role === 'tool')
+    const count = results.length
+    const read = count ? JSON.parse(results[0].content) : undefined
+    const choice =
+      count < 2
+        ? {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `continue-${count}`,
+                  function: {
+                    name: count ? 'edit' : 'read',
+                    arguments: JSON.stringify(
+                      count
+                        ? {
+                            path,
+                            baseVersion: read.version,
+                            edits: [
+                              {
+                                mode: 'insert',
+                                target: { kind: 'document_end' },
+                                newText: '窗外忽然传来脚步声。'
+                              }
+                            ]
+                          }
+                        : { path }
+                    )
+                  }
+                }
+              ]
+            },
+            finish_reason: 'tool_calls'
+          }
+        : { delta: { content: '文末续写已准备，请审阅。' }, finish_reason: 'stop' }
+    response.setHeader('Content-Type', 'text/event-stream')
+    response.end('data: ' + JSON.stringify({ choices: [choice] }) + '\n\ndata: [DONE]\n\n')
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await configureSelectionAgent((server.address() as { port: number }).port)
+    await page
+      .getByRole('textbox', { name: '给 Agent 的消息' })
+      .fill('在这一章末尾续写一句，保留前文。')
+    await page.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(page.getByRole('button', { name: '接受修改', exact: true })).toBeEnabled()
+    expect((await disk(chapter.id)).content).toBe(source)
+    expect(await page.locator('.diff-before').textContent()).toBe(source)
+    // LOOM-034 normalizes the complete chapter proposal to double paragraph separators.
+    expect(await page.locator('.diff-after').textContent()).toBe(
+      source + '\n\n窗外忽然传来脚步声。'
+    )
+    await expect(page.locator('.diff-after .diff-newline')).toHaveCount(2)
+    await expect(page.locator('.proposal-card')).toContainText(
+      '已统一候选正文的段落换行，请一并审阅。'
+    )
+    await page
+      .locator('.proposal-card')
+      .screenshot({ path: resolve('.test-artifacts/zestloomer-026-continuation-preview.png') })
+    await page.getByRole('button', { name: '接受修改', exact: true }).click()
+    await expect(page.getByRole('button', { name: '撤销这次修改' })).toBeEnabled()
+    expect((await disk(chapter.id)).content).toBe(source + '\n\n窗外忽然传来脚步声。')
+    await page.getByRole('button', { name: '撤销这次修改' }).click()
+    await expect(page.locator('.proposal-card')).toContainText('已撤销')
+    expect((await disk(chapter.id)).content).toBe(source)
   } finally {
     server.closeAllConnections()
     await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -503,9 +630,13 @@ test('reviewing one of two document proposals preserves the other preview and re
                         ? { path }
                         : {
                             path,
+                            baseVersion: JSON.parse(
+                              payload.messages.filter((m: any) => m.role === 'tool').at(-1).content
+                            ).version,
                             edits: [
                               {
-                                oldText: `${chapter.title}原文。`,
+                                mode: 'replace',
+                                target: { kind: 'lines', startLine: 1, endLine: 1 },
                                 newText: `${chapter.title}修改后。`
                               }
                             ]
@@ -658,7 +789,7 @@ test('external conflict preserves input, compares versions, then explicitly save
   await newDocument('冲突章')
   await enterText('原文')
   const doc = (await docs())[0]
-  const bookFolders = (await fs.readdir(root)).filter((name) => name.startsWith('Loom-'))
+  const bookFolders = (await fs.readdir(root)).filter((name) => name.startsWith('ZestLoomer-'))
   const path = join(root, bookFolders[0], 'chapters', doc.id, 'content.txt')
   await fs.writeFile(path, '外部改写', 'utf8')
   await page.locator('.cm-content').click()
@@ -728,7 +859,7 @@ test('undo and selection survive an empty module; Markdown never changes appeara
   await page.keyboard.press('Control+s')
   await expect(page.locator('.save-state')).toHaveText('已保存')
   const doc = (await docs())[0]
-  await page.getByRole('button', { name: /^人物/ }).click()
+  await page.getByRole('button', { name: /^速记/ }).click()
   await expect(page.getByRole('heading', { name: '留一页给新的想法' })).toBeVisible()
   await page.getByRole('button', { name: /^正文/ }).click()
   await page.getByRole('button', { name: '撤销', exact: true }).click()
@@ -764,13 +895,13 @@ test('Enter inserts two newlines without indent; close flushes and an interrupte
   await launch()
   await expect(page.getByRole('textbox', { name: '文档标题', exact: true })).toHaveValue('保存边界')
   expect((await disk(doc.id)).content).toContain('关闭前输入')
-  const boot = await page.evaluate(() => window.loom.bootstrap())
+  const boot = await page.evaluate(() => window.zestloomer.bootstrap())
   if (!boot.ok) throw new Error(boot.message)
   const book = boot.value.books[0]
   // Simulate a previous abnormal exit by persisting a recovery draft, then destroying the window.
   await page.evaluate(
     async ({ bookId, id, version }) => {
-      const result = await window.loom.draft(bookId, id, {
+      const result = await window.zestloomer.draft(bookId, id, {
         content: '异常退出的草稿',
         title: '保存边界',
         baseVersion: version,
@@ -900,12 +1031,12 @@ test('chapter Enter and Shift+Enter insert double line breaks, preserve CRLF and
   expect((await disk(note.id)).content).toBe('第一行\n第二行')
   await expect(page.locator('.cm-line').last()).toHaveCSS('text-indent', '0px')
   await page.evaluate(async (id) => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
     const bookId = boot.value.preferences.lastBookId!
-    const read = await window.loom.read(bookId, id)
+    const read = await window.zestloomer.read(bookId, id)
     if (!read.ok) throw new Error(read.message)
-    const saved = await window.loom.save({
+    const saved = await window.zestloomer.save({
       bookId,
       id,
       title: read.value.document.title,
@@ -931,12 +1062,12 @@ test('mixed proposal line endings remain separate lines and typing preserves the
   const chapter = (await docs()).find((doc) => doc.title === '混合换行')!
   await page.getByRole('button', { name: /^速记/ }).click()
   await page.evaluate(async (id) => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
     const bookId = boot.value.preferences.lastBookId!
-    const read = await window.loom.read(bookId, id)
+    const read = await window.zestloomer.read(bookId, id)
     if (!read.ok) throw new Error(read.message)
-    const saved = await window.loom.save({
+    const saved = await window.zestloomer.save({
       bookId,
       id,
       title: read.value.document.title,
@@ -981,7 +1112,7 @@ test('edited configuration probes separate chat and tools without saving or expo
               id: 'probe1',
               type: 'function',
               function: {
-                name: 'loom_connection_probe',
+                name: 'zestloomer_connection_probe',
                 arguments: JSON.stringify({
                   value: body.model === 'wrong-value' ? 'incorrect' : nonce
                 })
@@ -1009,13 +1140,16 @@ test('edited configuration probes separate chat and tools without saving or expo
   const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`
   try {
     const input = { id: 'new', baseUrl, model: 'probe-model', apiKey: '' }
-    const configBefore = await page.evaluate(() => window.loom.agent.config())
+    const configBefore = await page.evaluate(() => window.zestloomer.agent.config())
     const connection = await page.evaluate(
-      (input) => window.loom.agent.test(input, 'connection'),
+      (input) => window.zestloomer.agent.test(input, 'connection'),
       input
     )
     expect(connection.ok).toBe(true)
-    const tools = await page.evaluate((input) => window.loom.agent.test(input, 'tools'), input)
+    const tools = await page.evaluate(
+      (input) => window.zestloomer.agent.test(input, 'tools'),
+      input
+    )
     expect(tools.ok).toBe(true)
     const final = requests.at(-1)
     expect(
@@ -1024,22 +1158,23 @@ test('edited configuration probes separate chat and tools without saving or expo
     ).toBe('synthetic-signature')
     const chatOnly = { ...input, model: 'chat-only' }
     expect(
-      (await page.evaluate((input) => window.loom.agent.test(input, 'connection'), chatOnly)).ok
+      (await page.evaluate((input) => window.zestloomer.agent.test(input, 'connection'), chatOnly))
+        .ok
     ).toBe(true)
     expect(
-      (await page.evaluate((input) => window.loom.agent.test(input, 'tools'), chatOnly)).ok
+      (await page.evaluate((input) => window.zestloomer.agent.test(input, 'tools'), chatOnly)).ok
     ).toBe(false)
     expect(
       (
-        await page.evaluate((input) => window.loom.agent.test(input, 'tools'), {
+        await page.evaluate((input) => window.zestloomer.agent.test(input, 'tools'), {
           ...input,
           model: 'wrong-value'
         })
       ).ok
     ).toBe(false)
-    expect(await page.evaluate(() => window.loom.agent.config())).toEqual(configBefore)
+    expect(await page.evaluate(() => window.zestloomer.agent.config())).toEqual(configBefore)
     expect(JSON.stringify(requests)).not.toContain('book/')
-    const models = await page.evaluate((input) => window.loom.agent.models(input), {
+    const models = await page.evaluate((input) => window.zestloomer.agent.models(input), {
       ...input,
       model: ''
     })
@@ -1055,6 +1190,7 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
     safeStorage.encryptString('synthetic-migration-key').toString('base64')
   )
   await electron.close()
+  await fs.unlink(join(root, '.zestloomer', 'migration.json'))
   await fs.writeFile(
     join(profile, 'agent.json'),
     JSON.stringify({
@@ -1066,10 +1202,10 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
     'utf8'
   )
   await launch()
-  const legacy = await page.evaluate(() => window.loom.agent.config())
+  const legacy = await page.evaluate(() => window.zestloomer.agent.config())
   expect(legacy.ok && legacy.value.profiles?.[0].id).toBe('default')
   const migrated = await page.evaluate(() =>
-    window.loom.agent.configure({
+    window.zestloomer.agent.configure({
       id: 'default',
       baseUrl: 'http://127.0.0.1:9123/v1',
       model: 'legacy-model',
@@ -1078,7 +1214,7 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
   )
   expect(migrated.ok && migrated.value.hasKey).toBe(true)
   const refused = await page.evaluate(() =>
-    window.loom.agent.configure({
+    window.zestloomer.agent.configure({
       id: 'default',
       baseUrl: 'http://127.0.0.1:9999/v1',
       model: 'legacy-model'
@@ -1086,7 +1222,7 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
   )
   expect(refused.ok).toBe(false)
   const added = await page.evaluate(() =>
-    window.loom.agent.configure({
+    window.zestloomer.agent.configure({
       id: 'new',
       baseUrl: 'http://127.0.0.1:9124/v1',
       model: 'second-model',
@@ -1100,7 +1236,7 @@ test('legacy encrypted configuration migrates to profiles and survives restart',
   expect(added.ok && added.value.profiles?.length).toBe(2)
   await electron.close()
   await launch()
-  const restarted = await page.evaluate(() => window.loom.agent.config())
+  const restarted = await page.evaluate(() => window.zestloomer.agent.config())
   expect(restarted.ok && restarted.value.model).toBe('legacy-model')
   expect(JSON.stringify(restarted)).not.toContain('synthetic-migration-key')
   expect(JSON.stringify(restarted)).not.toContain('encryptedKey')
@@ -1424,12 +1560,12 @@ test('CRLF selection after earlier paragraphs sends source coordinates from both
     const source = '第一段，尚未选中。\r\n\r\n第二段含有 😀 表情。\r\n\r\n第三段，林舟推开城门。'
     await page.evaluate(
       async ({ id, source }) => {
-        const boot = await window.loom.bootstrap()
+        const boot = await window.zestloomer.bootstrap()
         if (!boot.ok) throw new Error(boot.message)
         const bookId = boot.value.preferences.lastBookId!
-        const read = await window.loom.read(bookId, id)
+        const read = await window.zestloomer.read(bookId, id)
         if (!read.ok) throw new Error(read.message)
-        const saved = await window.loom.save({
+        const saved = await window.zestloomer.save({
           bookId,
           id,
           title: read.value.document.title,
@@ -1523,7 +1659,7 @@ test('workspace layout stays beside the editor, remembers width and preserves ch
   expect(width).toBeGreaterThan(400)
   await expect
     .poll(async () => {
-      const state = await page.evaluate(() => window.loom.bootstrap())
+      const state = await page.evaluate(() => window.zestloomer.bootstrap())
       return state.ok && Object.values(state.value.preferences.agentWidths)[0]
     })
     .toBe(width)
@@ -1564,7 +1700,7 @@ test('settings explicitly save appearance, guard navigation and contain keyboard
   const settings = page.getByRole('dialog', { name: '设置中心' })
   await expect(page.getByRole('tab', { name: /写作显示/ })).toBeFocused()
   await page.getByRole('spinbutton', { name: '字号', exact: true }).fill('22')
-  let saved = await page.evaluate(() => window.loom.bootstrap())
+  let saved = await page.evaluate(() => window.zestloomer.bootstrap())
   expect(saved.ok && saved.value.preferences.size).toBe(18)
   await page.getByRole('tab', { name: /AI 接入/ }).click()
   await expect(page.getByRole('alertdialog', { name: '未保存的修改' })).toBeVisible()
@@ -1575,7 +1711,7 @@ test('settings explicitly save appearance, guard navigation and contain keyboard
   const screenshots = resolve('.test-artifacts/ux-layout-settings')
   await fs.mkdir(screenshots, { recursive: true })
   await page.screenshot({ path: join(screenshots, 'settings-writing.png') })
-  saved = await page.evaluate(() => window.loom.bootstrap())
+  saved = await page.evaluate(() => window.zestloomer.bootstrap())
   expect(saved.ok && saved.value.preferences.size).toBe(22)
   await page.getByRole('spinbutton', { name: '字号', exact: true }).fill('23')
   await page.getByRole('button', { name: '关闭', exact: true }).click()
@@ -1640,7 +1776,7 @@ test('AI settings separate defaults, preserve key identity and invalidate edited
     await expect(page.locator('.probe-row').first()).toContainText('需要重新测试')
     await page.getByRole('button', { name: '保存 Agent 配置' }).click()
     await expect(page.locator('.settings-footer')).toContainText('Agent 配置已保存')
-    let config = await page.evaluate(() => window.loom.agent.config())
+    let config = await page.evaluate(() => window.zestloomer.agent.config())
     const firstId = config.ok ? config.value.defaultProfileId! : ''
     expect(config.ok && config.value.hasKey).toBe(true)
     await page.getByRole('combobox', { name: '接入配置', exact: true }).selectOption('new')
@@ -1657,13 +1793,13 @@ test('AI settings separate defaults, preserve key identity and invalidate edited
     )
     await page.getByRole('button', { name: '保存 Agent 配置' }).click()
     await expect(page.locator('.settings-footer')).toContainText('Agent 配置已保存')
-    config = await page.evaluate(() => window.loom.agent.config())
+    config = await page.evaluate(() => window.zestloomer.agent.config())
     expect(config.ok && config.value.defaultProfileId).toBe(firstId)
     expect(config.ok && config.value.profiles?.length).toBe(2)
     await page.getByRole('checkbox', { name: '保存后设为默认配置', exact: true }).check()
     await page.getByRole('button', { name: '保存 Agent 配置' }).click()
     await expect(page.locator('.config-badge')).toHaveText('当前默认')
-    config = await page.evaluate(() => window.loom.agent.config())
+    config = await page.evaluate(() => window.zestloomer.agent.config())
     expect(config.ok && config.value.model).toBe('backup-model')
     expect(config.ok && config.value.hasKey).toBe(false)
     await page.getByRole('combobox', { name: '接入配置', exact: true }).selectOption(firstId)
@@ -1743,7 +1879,7 @@ test('tool API selects saved profiles in AI settings, titles completed conversat
       await page.getByRole('button', { name: '保存 Agent 配置', exact: true }).click()
       await expect(page.locator('.settings-footer')).toContainText('Agent 配置已保存')
     }
-    const agentConfig = await page.evaluate(() => window.loom.agent.config())
+    const agentConfig = await page.evaluate(() => window.zestloomer.agent.config())
     if (!agentConfig.ok) throw new Error(agentConfig.message)
     const titleId = agentConfig.value.profiles!.find(
       (profile) => profile.model === 'title-model'
@@ -1760,7 +1896,7 @@ test('tool API selects saved profiles in AI settings, titles completed conversat
     await page.getByRole('checkbox', { name: '启用工具 API', exact: true }).check()
     await page.getByRole('button', { name: '测试工具 API', exact: true }).click()
     await expect(page.locator('.probe-row')).toContainText('连接正常')
-    let toolConfig = await page.evaluate(() => window.loom.tools.config())
+    let toolConfig = await page.evaluate(() => window.zestloomer.tools.config())
     expect(toolConfig.ok && toolConfig.value.enabled).toBe(false)
     expect(requests[0].body.model).toBe('title-model')
     expect(requests[0].key).toBe('Bearer synthetic-title-key')
@@ -1833,9 +1969,9 @@ test('tool API selects saved profiles in AI settings, titles completed conversat
     ])
     await expect(page.getByRole('region', { name: '本轮进度' })).toContainText('本轮已完成')
     expect(requests.filter((request) => !request.body.stream)).toHaveLength(2)
-    toolConfig = await page.evaluate(() => window.loom.tools.config())
+    toolConfig = await page.evaluate(() => window.zestloomer.tools.config())
     expect(toolConfig.ok && toolConfig.value).toEqual({ enabled: false, profileId: titleId })
-    const saved = JSON.parse(await fs.readFile(join(profile, 'tool-api.json'), 'utf8'))
+    const saved = JSON.parse(await fs.readFile(join(root, '.zestloomer', 'tool-api.json'), 'utf8'))
     expect(saved).toEqual({ format: 1, enabled: false, profileId: titleId })
     expect(JSON.stringify(saved)).not.toContain('synthetic-')
   } finally {

@@ -1,6 +1,6 @@
 # 编辑器与文档格式（v1）
 
-本文描述 Loom v1 作品格式与编辑器行为。日常操作见 [使用指南](USER-GUIDE.md)。
+本文描述 ZestLoomer v1 作品格式与编辑器行为。日常操作见 [使用指南](USER-GUIDE.md)。
 
 ## 工作区与编辑器
 
@@ -17,7 +17,7 @@ Electron + Vue 3 保留。五种文档统一由 `TextEditor.vue` 使用 CodeMirr
 ## 文件布局
 
 ```text
-Loom-xxxxxxxx/
+ZestLoomer-xxxxxxxx/
 ├─ book.json                        # format: 1、书籍 ID 与标题
 ├─ chapters/
 │  ├─ order.json                    # 可选，正文顺序的一次性原子更新
@@ -72,7 +72,7 @@ Loom-xxxxxxxx/
 
 ## 当前限制
 
-- 打开作品使用当前 Loom v1 格式。
+- 打开作品使用当前 ZestLoomer v1 格式。
 - 未实现分卷管理、复杂标签筛选或父子大纲；工作区和 Agent 均提供书内文字检索。
 - 外部修改在重新打开或保存时核对；尚未提供实时文件监听。
 - 标题和资料内容可随时保存，不提供内容确定性状态；未确定构想鼓励放在速记。

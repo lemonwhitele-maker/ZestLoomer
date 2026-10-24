@@ -5,6 +5,18 @@ import type { SourceRef } from '../shared/agent'
 import { defaultNamingRule, validateNamingRule } from '../shared/chapterNaming'
 import { BookCatalog } from './catalog'
 import { counters } from '../shared/perf'
+import { parseBindings, isDocumentId, validateForeshadow, parseForeshadow } from './storyLinks'
+import { initialContent } from '../shared/templates'
+import { bookExamples } from '../shared/examples'
+import { chapterOutlineMatches } from '../shared/chapterOutlineMatching'
+import type {
+  BindingDependency,
+  ChapterOutlineBinding,
+  ChapterOutlineBindings,
+  ChapterOutlineMatchResult,
+  StoryTarget,
+  StoryRead
+} from '../shared/storyLinks'
 import { setImmediate as yieldTurn } from 'node:timers/promises'
 import type {
   BookPreferences,
@@ -74,6 +86,7 @@ interface Transaction {
   content: string
   meta: DocumentMeta
   before?: DocumentSnapshot
+  referenceBaseline?: string
 }
 interface CreateBatchTransaction {
   type: 'create'
@@ -123,6 +136,8 @@ export const countWords = (content: string) => Array.from(content.replace(/\s/g,
 export class DocumentStore {
   readonly books = new Map<string, Book>()
   private queues = new Map<string, Promise<unknown>>()
+  private automaticBindingIds = new Map<string, Set<string>>()
+  private automaticBindingNotices = new Map<string, string>()
   private catalogs = new Map<string, BookCatalog>()
   private fingerprints = new Map<string, Map<string, string>>()
   constructor(private writer = atomicWrite) {}
@@ -144,9 +159,15 @@ export class DocumentStore {
         counters.recordQueueWait(started - requestedAt)
         try {
           const book = this.books.get(key)
-          if (book) await this.recoverBatch(book)
-          return await operation()
+          if (book) {
+            await this.recoverBatch(book)
+            await this.flushAutomaticBindings(book)
+          }
+          const result = await operation()
+          if (book) await this.flushAutomaticBindings(book)
+          return result
         } finally {
+          this.automaticBindingIds.delete(key)
           counters.recordQueueExec(performance.now() - started)
         }
       })
@@ -180,15 +201,34 @@ export class DocumentStore {
     }
     return target
   }
-  async createBook(parent: string, title: string): Promise<Book> {
+  async createBook(parent: string, title: string, examples = false): Promise<Book> {
     const id = `book_${randomUUID()}`
-    const root = join(await fs.realpath(parent), `Loom-${id.slice(5, 13)}`)
+    const root = join(await fs.realpath(parent), `ZestLoomer-${id.slice(5, 13)}`)
     await fs.mkdir(root)
     const book: Book = { id, title: titleOf(title), root, format: 1 }
     await this.writer(join(root, 'book.json'), json({ id, title: book.title, format: 1 }))
     await this.initialize(book)
     this.books.set(id, book)
+    if (examples) {
+      for (const example of bookExamples)
+        await this.createAt(book, example.kind, example.title, {
+          content: example.content,
+          readonlyExample: true
+        })
+    }
     return book
+  }
+  renameBook(bookId: string, title: string): Promise<Book> {
+    return this.queue(bookId, async () => {
+      const book = this.book(bookId)
+      const next = { ...book, title: titleOf(title) }
+      await this.writer(
+        await this.safe(book, join(book.root, 'book.json')),
+        json({ id: next.id, title: next.title, format: next.format })
+      )
+      this.books.set(bookId, next)
+      return next
+    })
   }
   async openBook(root: string): Promise<Book> {
     root = await fs.realpath(root)
@@ -196,7 +236,7 @@ export class DocumentStore {
       fail('PATH', '作品清单不能是符号链接')
     const meta = JSON.parse(await fs.readFile(join(root, 'book.json'), 'utf8'))
     if (meta.format !== 1 || !validId(meta.id) || !meta.id.startsWith('book_'))
-      fail('FORMAT', '不是支持的 Loom 作品；请选择包含有效 book.json 的作品目录')
+      fail('FORMAT', '不是支持的 ZestLoomer 作品；请选择包含有效 book.json 的作品目录')
     const book: Book = { id: meta.id, title: titleOf(meta.title), format: 1, root }
     const previous = this.books.get(book.id)
     if (previous && previous.root !== root)
@@ -264,6 +304,12 @@ export class DocumentStore {
       const pending: Transaction = JSON.parse(await fs.readFile(journalPath, 'utf8'))
       this.validateMeta(pending.meta, id, kind)
       if (typeof pending.content !== 'string') fail('FORMAT', '保存恢复正文无效')
+      if (kind === 'foreshadows')
+        await this.validateForeshadowInternal(
+          book,
+          pending.content,
+          pending.referenceBaseline ?? pending.before?.content
+        )
       if (pending.before) {
         this.validateMeta(pending.before, id, kind)
         const { content: _content, version: _version, ...beforeMeta } = pending.before
@@ -407,6 +453,437 @@ export class DocumentStore {
     await this.ensureCatalog(book)
     return this.catalog(book.id).list()
   }
+  private async bindingTarget(
+    book: Book,
+    id: string,
+    kind: 'chapters' | 'outlines'
+  ): Promise<StoryTarget> {
+    const path = `book/${kind}/${id}.${kind === 'chapters' ? 'txt' : 'md'}`
+    try {
+      const location = await this.locate(book, id)
+      if (location.kind !== kind) fail('BINDING_KIND', '关系两端必须分别为当前作品的正文和大纲')
+      // Only metadata is needed: relation attachments never read target content.
+      const meta = JSON.parse(
+        await fs.readFile(await this.safe(book, join(location.folder, 'meta.json')), 'utf8')
+      )
+      this.validateMeta(meta, id, kind)
+      const contentPath = await this.safe(book, this.contentPath(location.folder, kind))
+      return {
+        id,
+        kind,
+        path,
+        title: meta.title,
+        state: !(await exists(contentPath)) ? 'missing' : location.trashed ? 'trashed' : 'active'
+      }
+    } catch (error) {
+      if (
+        (error as { code?: string }).code === 'NOT_FOUND' ||
+        (error as { code?: string }).code === 'ENOENT'
+      )
+        return { id, kind, path, title: null, state: 'missing' }
+      throw error
+    }
+  }
+  private async validateForeshadowInternal(book: Book, content: string, previous?: string) {
+    return validateForeshadow(
+      content,
+      async (id) => {
+        try {
+          const location = await this.locate(book, id)
+          if (location.kind !== 'chapters') return { kind: location.kind, state: 'active' }
+          return this.bindingTarget(book, id, 'chapters')
+        } catch (error) {
+          if ((error as { code?: string }).code === 'NOT_FOUND')
+            return { kind: 'chapters', state: 'missing' }
+          throw error
+        }
+      },
+      previous
+    )
+  }
+  validateForeshadowCandidate(
+    bookId: string,
+    content: string,
+    before?: { id: string; version: string }
+  ): Promise<void> {
+    return this.queue(bookId, async () => {
+      const book = this.book(bookId)
+      const current = before ? await this.snapshot(book, before.id) : undefined
+      if (current && (current.kind !== 'foreshadows' || current.version !== before!.version))
+        fail('CONFLICT', '伏笔版本已变化')
+      await this.validateForeshadowInternal(book, content, current?.content)
+    })
+  }
+  foreshadowRows(bookId: string, offset = 0, limit = 100) {
+    return this.queue(bookId, async () => {
+      if (
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1 ||
+        limit > 200
+      )
+        fail('ARGUMENT', '伏笔列表分页参数无效')
+      const book = this.book(bookId)
+      const docs = (await this.orderedInternal(book)).filter(
+        (doc) => doc.kind === 'foreshadows' && !doc.trashedAt
+      )
+      const rows = []
+      for (const meta of docs.slice(offset, offset + limit)) {
+        const document = await this.snapshot(book, meta.id)
+        try {
+          const fields = parseForeshadow(document.content)
+          rows.push({
+            document,
+            fields,
+            startChapter: fields.startChapterId
+              ? await this.bindingTarget(book, fields.startChapterId, 'chapters')
+              : null,
+            endChapter: fields.endChapterId
+              ? await this.bindingTarget(book, fields.endChapterId, 'chapters')
+              : null
+          })
+        } catch (error) {
+          rows.push({ document, error: (error as Error).message })
+        }
+      }
+      return {
+        rows,
+        total: docs.length,
+        nextOffset: offset + rows.length < docs.length ? offset + rows.length : null
+      }
+    })
+  }
+  private async bindingsInternal(book: Book): Promise<ChapterOutlineBindings> {
+    const path = await this.safe(
+      book,
+      join(book.root, '.workspace', 'chapter-outline-bindings.json')
+    )
+    let raw: string
+    try {
+      raw = await fs.readFile(path, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        const marker = await this.safe(
+          book,
+          join(book.root, '.workspace', 'chapter-outline-bindings.initialized')
+        )
+        if (await exists(marker))
+          fail('BINDING_MISSING', '曾建立的正文大纲关系文件缺失，请从备份恢复，不能当作未绑定')
+        return { schemaVersion: 1, revision: 0, bindings: [] }
+      }
+      throw error
+    }
+    const state = parseBindings(raw)
+    for (const pair of state.bindings) {
+      await this.bindingTarget(book, pair.chapterId, 'chapters')
+      await this.bindingTarget(book, pair.outlineId, 'outlines')
+    }
+    return state
+  }
+  chapterOutlineBindings(bookId: string): Promise<ChapterOutlineBindings> {
+    return this.queue(bookId, () => this.bindingsInternal(this.book(bookId)))
+  }
+  /** One atomic replacement handles bind, unbind and explicit rebind. */
+  setChapterOutlineBinding(input: {
+    bookId: string
+    chapterId: string
+    outlineId: string | null
+    expectedRevision: number
+  }): Promise<ChapterOutlineBindings> {
+    return this.queue(input.bookId, async () => {
+      if (
+        !isDocumentId(input.chapterId) ||
+        (input.outlineId !== null && !isDocumentId(input.outlineId))
+      )
+        fail('ID', '关系文档标识无效')
+      const book = this.book(input.bookId)
+      const state = await this.bindingsInternal(book)
+      if (input.expectedRevision !== state.revision)
+        fail('BINDING_CONFLICT', '关系已变化，请刷新后重试')
+      const previous = state.bindings.find((pair) => pair.chapterId === input.chapterId)
+      if ((previous?.outlineId ?? null) === input.outlineId) return state
+      if (input.outlineId !== null) {
+        const occupied = state.bindings.find((pair) => pair.outlineId === input.outlineId)
+        if (occupied) {
+          const owner = await this.bindingTarget(book, occupied.chapterId, 'chapters')
+          throw Object.assign(
+            new DocumentError(
+              'BINDING_OCCUPIED',
+              `大纲已绑定「${owner.title || owner.id}」，不能自动抢占`
+            ),
+            {
+              binding: occupied
+            }
+          )
+        }
+        const chapter = await this.bindingTarget(book, input.chapterId, 'chapters')
+        const outline = await this.bindingTarget(book, input.outlineId, 'outlines')
+        if (chapter.state !== 'active' || outline.state !== 'active')
+          fail('BINDING_TARGET', '建立关系时正文和大纲必须存在且未回收')
+      }
+      if (state.revision === Number.MAX_SAFE_INTEGER)
+        fail('BINDING_REVISION', '关系版本已超出安全范围')
+      const next: ChapterOutlineBindings = {
+        schemaVersion: 1,
+        revision: state.revision + 1,
+        bindings: [
+          ...state.bindings.filter((pair) => pair.chapterId !== input.chapterId),
+          ...(input.outlineId === null
+            ? []
+            : [{ chapterId: input.chapterId, outlineId: input.outlineId }])
+        ]
+      }
+      await this.writeBindings(book, next)
+      return next
+    })
+  }
+  private async writeBindings(book: Book, next: ChapterOutlineBindings): Promise<void> {
+    parseBindings(json(next))
+    const marker = await this.safe(
+      book,
+      join(book.root, '.workspace', 'chapter-outline-bindings.initialized')
+    )
+    const newMarker = !(await exists(marker))
+    if (newMarker) await this.writer(marker, '1\n')
+    try {
+      await this.writer(
+        await this.safe(book, join(book.root, '.workspace', 'chapter-outline-bindings.json')),
+        json(next)
+      )
+    } catch (error) {
+      if (newMarker) await fs.unlink(marker).catch(() => {})
+      throw error
+    }
+  }
+  private requestAutomaticBinding(book: Book, doc: DocumentMeta): void {
+    if (doc.kind !== 'chapters' && doc.kind !== 'outlines') return
+    const ids = this.automaticBindingIds.get(book.id) ?? new Set<string>()
+    ids.add(doc.id)
+    this.automaticBindingIds.set(book.id, ids)
+  }
+  private async flushAutomaticBindings(book: Book): Promise<void> {
+    const ids = this.automaticBindingIds.get(book.id)
+    if (!ids?.size) return
+    this.automaticBindingIds.delete(book.id)
+    try {
+      const result = await this.matchBindingsInternal(book, undefined, ids)
+      if (result.ambiguousNumbers.length)
+        this.automaticBindingNotices.set(
+          book.id,
+          `章号 ${result.ambiguousNumbers.join('、')} 重复，未自动绑定；请手动选择。`
+        )
+      else this.automaticBindingNotices.delete(book.id)
+    } catch (error) {
+      // The document has already been saved. Do not report a false manuscript
+      // save failure or retry its write because the independent binding failed.
+      this.automaticBindingNotices.set(
+        book.id,
+        `文档已保存，但自动绑定未完成：${(error as Error).message}。可修复后点击“自动匹配”重试。`
+      )
+    }
+  }
+  private async matchBindingsInternal(
+    book: Book,
+    expectedRevision?: number,
+    ids?: ReadonlySet<string>
+  ): Promise<ChapterOutlineMatchResult> {
+    const state = await this.bindingsInternal(book)
+    if (expectedRevision !== undefined && expectedRevision !== state.revision)
+      fail('BINDING_CONFLICT', '关系已变化，请刷新后重试')
+    const matches = chapterOutlineMatches(await this.listInternal(book), state.bindings, ids)
+    for (const pair of matches.pairs) {
+      const chapter = await this.bindingTarget(book, pair.chapterId, 'chapters')
+      const outline = await this.bindingTarget(book, pair.outlineId, 'outlines')
+      if (chapter.state !== 'active' || outline.state !== 'active')
+        fail('BINDING_TARGET', '匹配目标已变化，请刷新重试')
+    }
+    if (matches.pairs.length) {
+      if (state.revision === Number.MAX_SAFE_INTEGER)
+        fail('BINDING_REVISION', '关系版本已超出安全范围')
+      state.revision++
+      state.bindings.push(...matches.pairs)
+      await this.writeBindings(book, state)
+    }
+    return {
+      revision: state.revision,
+      added: matches.pairs,
+      ambiguousNumbers: matches.ambiguousNumbers,
+      occupiedNumbers: matches.occupiedNumbers
+    }
+  }
+  matchChapterOutlines(
+    bookId: string,
+    expectedRevision: number
+  ): Promise<ChapterOutlineMatchResult> {
+    return this.queue(bookId, async () => {
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+        fail('BINDING_CONFLICT', '缺少有效关系版本，请刷新后重试')
+      const result = await this.matchBindingsInternal(this.book(bookId), expectedRevision)
+      this.automaticBindingNotices.delete(bookId)
+      return result
+    })
+  }
+  private async resolveBinding(
+    book: Book,
+    doc: DocumentSnapshot,
+    state: ChapterOutlineBindings
+  ): Promise<ChapterOutlineBinding | undefined> {
+    if (doc.kind !== 'chapters' && doc.kind !== 'outlines') return undefined
+    const pair = state.bindings.find(
+      (pair) => pair.chapterId === doc.id || pair.outlineId === doc.id
+    )
+    if (!pair) return { state: 'unbound', revision: state.revision }
+    const target =
+      doc.kind === 'chapters'
+        ? await this.bindingTarget(book, pair.outlineId, 'outlines')
+        : await this.bindingTarget(book, pair.chapterId, 'chapters')
+    return { state: 'bound', revision: state.revision, target }
+  }
+  /** A single queue operation supplies a consistent document/relation batch. */
+  readWithBindings(
+    bookId: string,
+    ids: string[],
+    explicitReference = false,
+    errors?: Map<string, string>
+  ): Promise<StoryRead[]> {
+    return this.queue(bookId, async () => {
+      const book = this.book(bookId)
+      const documents: DocumentSnapshot[] = []
+      for (const id of ids) {
+        try {
+          const doc = await this.snapshot(book, id)
+          if (doc.trashedAt && !explicitReference) fail('TRASHED', '回收文档只允许沿明确引用读取')
+          documents.push(doc)
+        } catch (error) {
+          if (!errors) throw error
+          errors.set(id, (error as Error).message)
+        }
+      }
+      let state: ChapterOutlineBindings
+      let bindingError: ChapterOutlineBinding | undefined
+      try {
+        state = await this.bindingsInternal(book)
+      } catch (error) {
+        const failure = {
+          state: 'error' as const,
+          code: (error as { code?: string }).code || 'BINDING_READ',
+          message: (error as Error).message
+        }
+        bindingError = failure
+        state = { schemaVersion: 1, revision: 0, bindings: [] }
+      }
+      const result: StoryRead[] = []
+      for (const document of documents) {
+        const item: StoryRead = {
+          document,
+          chapterOutlineBinding: ['chapters', 'outlines'].includes(document.kind)
+            ? (bindingError ?? (await this.resolveBinding(book, document, state)))
+            : undefined
+        }
+        if (document.kind === 'foreshadows') {
+          try {
+            const fields = parseForeshadow(document.content)
+            item.foreshadowChapters = {
+              start: fields.startChapterId
+                ? await this.bindingTarget(book, fields.startChapterId, 'chapters')
+                : null,
+              end: fields.endChapterId
+                ? await this.bindingTarget(book, fields.endChapterId, 'chapters')
+                : null
+            }
+          } catch (error) {
+            item.foreshadowChapters = { error: (error as Error).message }
+          }
+        }
+        const notice = this.automaticBindingNotices.get(book.id)
+        if (notice && ['chapters', 'outlines'].includes(document.kind))
+          item.automaticBindingNotice = notice
+        result.push(item)
+      }
+      return result
+    })
+  }
+  private async assertBindingDependencies(
+    book: Book,
+    dependencies: BindingDependency[]
+  ): Promise<void> {
+    if (!dependencies.length) return
+    const state = await this.bindingsInternal(book)
+    for (const dependency of dependencies) {
+      if (
+        !isDocumentId(dependency.id) ||
+        (dependency.targetId !== null && !isDocumentId(dependency.targetId))
+      )
+        fail('BINDING_DEPENDENCY', '关系依赖无效')
+      const pair = state.bindings.find(
+        (pair) => pair.chapterId === dependency.id || pair.outlineId === dependency.id
+      )
+      const targetId = pair
+        ? pair.chapterId === dependency.id
+          ? pair.outlineId
+          : pair.chapterId
+        : null
+      if (targetId !== dependency.targetId)
+        fail('BINDING_STALE', '提案依赖的正文大纲关系已变化，请重新生成')
+    }
+  }
+  heavyContextSources(
+    bookId: string,
+    chapterId: string,
+    settings: import('../shared/heavyAgent').HeavyAgentSettings
+  ) {
+    return this.queue(bookId, async () => {
+      const book = this.book(bookId)
+      const chapter = await this.snapshot(book, chapterId)
+      if (chapter.kind !== 'chapters' || chapter.trashedAt) return null
+      const chapters = (await this.listInternal(book))
+        .filter((d) => d.kind === 'chapters' && !d.trashedAt)
+        .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+      const index = chapters.findIndex((d) => d.id === chapterId)
+      const notices: string[] = []
+      const bindings =
+        settings.chapterOutline || settings.previousContext
+          ? await this.bindingsInternal(book)
+          : undefined
+      const outline = async (id: string): Promise<DocumentSnapshot | null> => {
+        const pair = bindings?.bindings.find((p) => p.chapterId === id)
+        if (!pair) {
+          notices.push(`${chapters.find((d) => d.id === id)?.title || id}：未绑定大纲`)
+          return null
+        }
+        const target = await this.bindingTarget(book, pair.outlineId, 'outlines')
+        if (target.state !== 'active') {
+          notices.push(`${id}：大纲${target.state === 'trashed' ? '已回收' : '缺失'}`)
+          return null
+        }
+        try {
+          return await this.snapshot(book, pair.outlineId)
+        } catch (e) {
+          throw new Error(`大纲 ${pair.outlineId} 读取失败：${(e as Error).message}`)
+        }
+      }
+      const previousOutlines: DocumentSnapshot[] = []
+      if (settings.previousContext)
+        for (const d of chapters.slice(Math.max(0, index - 3), index)) {
+          const item = await outline(d.id)
+          if (item) previousOutlines.push(item)
+        }
+      if (settings.previousContext && index === 0) notices.push('首章没有前文，前文资料不适用')
+      return {
+        chapter,
+        notices,
+        previousOutlines,
+        chapterOrder: chapters.map((d) => d.id),
+        bindings,
+        previous:
+          settings.previousContext && index > 0
+            ? await this.snapshot(book, chapters[index - 1].id)
+            : null,
+        outline: settings.chapterOutline ? await outline(chapterId) : null
+      }
+    })
+  }
   list(bookId: string): Promise<DocumentMeta[]> {
     return this.queue(bookId, () => this.listInternal(this.book(bookId)))
   }
@@ -438,9 +915,12 @@ export class DocumentStore {
     book: Book,
     kind: DocumentKind,
     title: string,
-    options: { content?: string; id?: string; operationId?: string }
+    options: { content?: string; id?: string; operationId?: string; readonlyExample?: boolean }
   ): Promise<DocumentSnapshot> {
     if (!kinds.includes(kind)) fail('KIND', '文档类型无效')
+    if (kind === 'foreshadows' && options.content === undefined)
+      options = { ...options, content: initialContent(kind, 'blank') }
+    if (kind === 'foreshadows') await this.validateForeshadowInternal(book, options.content!)
     const id = options.id || `doc_${randomUUID()}`
     if (!validId(id) || !id.startsWith('doc_')) fail('ID', '文档标识无效')
     if (typeof (options.content ?? '') !== 'string') fail('CONTENT', '文档内容必须为文本')
@@ -454,6 +934,7 @@ export class DocumentStore {
           .map((doc) => doc.order)
       ) + 1
     const meta: DocumentMeta = {
+      ...(options.readonlyExample ? { readonlyExample: true } : {}),
       id,
       kind,
       title: titleOf(title),
@@ -495,19 +976,30 @@ export class DocumentStore {
     await fs.rename(staging, folder)
     const doc = await this.snapshot(book, id)
     this.catalog(book.id).add(doc, folder)
+    this.requestAutomaticBinding(book, doc)
     return doc
   }
   private async commit(
     book: Book,
     before: DocumentSnapshot,
     content: string,
-    meta: DocumentMeta
+    meta: DocumentMeta,
+    referenceBaseline?: string
   ): Promise<DocumentSnapshot> {
+    if (before.readonlyExample) fail('READ_ONLY', '示例资料不可修改，请复制为普通资料后编辑')
+    if (before.kind === 'foreshadows')
+      await this.validateForeshadowInternal(book, content, referenceBaseline ?? before.content)
     const { folder } = await this.locate(book, before.id)
     const journal = await this.safe(book, join(folder, 'pending.json'))
     await this.writer(
       journal,
-      json({ beforeHash: hash(before.content), content, meta, before } satisfies Transaction)
+      json({
+        beforeHash: hash(before.content),
+        content,
+        meta,
+        before,
+        referenceBaseline
+      } satisfies Transaction)
     )
     // readAt replays the transaction, including after a process restart.
     const committed = await this.snapshot(book, before.id)
@@ -525,12 +1017,14 @@ export class DocumentStore {
       const title = titleOf(input.title)
       if (before.content === input.content && before.title === title) return before
       const { content: _content, version: _version, ...meta } = before
-      return this.commit(book, before, input.content, {
+      const saved = await this.commit(book, before, input.content, {
         ...meta,
         title,
         updatedAt: new Date().toISOString(),
         generation: randomUUID()
       })
+      if (title !== before.title) this.requestAutomaticBinding(book, saved)
+      return saved
     })
   }
   writeDraft(bookId: string, id: string, draft: Draft | null): Promise<void> {
@@ -544,6 +1038,7 @@ export class DocumentStore {
         })
         return
       }
+      if (document.readonlyExample) fail('READ_ONLY', '示例资料不可修改，请复制后编辑')
       if (document.trashedAt) fail('TRASHED', '回收站文档不可写入草稿')
       if (
         typeof draft.content !== 'string' ||
@@ -713,8 +1208,13 @@ export class DocumentStore {
         fail('BATCH', '每次可创建 1–5000 篇文档')
       const items = input.items.map((item) => {
         if (!item || typeof (item.content ?? '') !== 'string') fail('CONTENT', '文档内容必须为文本')
-        return { title: titleOf(item.title), content: item.content ?? '' }
+        return {
+          title: titleOf(item.title),
+          content: item.content ?? initialContent(input.kind, 'blank')
+        }
       })
+      if (input.kind === 'foreshadows')
+        for (const item of items) await this.validateForeshadowInternal(book, item.content)
       if (
         items.reduce((total, item) => total + Buffer.byteLength(item.content, 'utf8'), 0) >
         100 * 1024 * 1024
@@ -788,6 +1288,7 @@ export class DocumentStore {
         generation = randomUUID()
       for (const change of input.changes) {
         const before = await this.snapshot(book, change.id)
+        if (before.readonlyExample) fail('READ_ONLY', '示例资料不可重命名')
         if (before.trashedAt) fail('TRASHED', '回收站文档不能批量重命名')
         if (!change.version || change.version !== before.version)
           fail('CONFLICT', '文档已变化，请重新生成命名预览')
@@ -870,6 +1371,8 @@ export class DocumentStore {
         !Array.isArray(afterOrder)
       )
         fail('FORMAT', '新建恢复记录损坏，原文件已保留')
+      if (kind === 'foreshadows')
+        for (const doc of documents) await this.validateForeshadowInternal(book, doc.content)
       const ids = documents.map((doc) => doc?.meta?.id)
       if (
         new Set(ids).size !== ids.length ||
@@ -999,6 +1502,11 @@ export class DocumentStore {
     } else fail('FORMAT', '未知的批量恢复记录，原文件已保留')
     this.catalog(book.id).invalidate()
     await fs.unlink(path)
+    const changed =
+      transaction.type === 'create'
+        ? transaction.documents.map((doc) => doc.meta)
+        : transaction.changes.map((change) => change.meta)
+    for (const doc of changed) this.requestAutomaticBinding(book, doc)
   }
   private async recordHistory(book: Book, snapshot: DocumentSnapshot): Promise<void> {
     if (
@@ -1104,12 +1612,18 @@ export class DocumentStore {
       await this.assertNoDraft(book, before)
       const entry = await this.historyEntry(book, id, entryId)
       const { content: _content, version: _version, ...meta } = before
-      return this.commit(book, before, entry.content!, {
-        ...meta,
-        title: titleOf(entry.title),
-        updatedAt: new Date().toISOString(),
-        generation: randomUUID()
-      })
+      return this.commit(
+        book,
+        before,
+        entry.content!,
+        {
+          ...meta,
+          title: titleOf(entry.title),
+          updatedAt: new Date().toISOString(),
+          generation: randomUUID()
+        },
+        entry.content
+      )
     })
   }
   stats(bookId: string): Promise<BookStats> {
@@ -1339,11 +1853,13 @@ export class DocumentStore {
       expectedVersion: string | null
       operationId: string
       sources: SourceRef[]
+      bindingDependencies?: BindingDependency[]
     },
     guard: () => void
   ): Promise<DocumentSnapshot> {
     return this.queue(input.bookId, async () => {
       const book = this.book(input.bookId)
+      await this.assertBindingDependencies(book, input.bindingDependencies ?? [])
       for (const source of input.sources) {
         const current = await this.snapshot(book, source.id)
         if (current.trashedAt || current.version !== source.version)
@@ -1383,6 +1899,7 @@ export class DocumentStore {
     return this.queue(bookId, async () => {
       const book = this.book(bookId)
       const current = await this.snapshot(book, id)
+      if (current.readonlyExample) fail('READ_ONLY', '示例资料不可撤销修改')
       if (current.generation === operationId) {
         if (
           current.content !== (before?.content ?? current.content) ||
@@ -1406,13 +1923,19 @@ export class DocumentStore {
       guard()
       const { content: _content, version: _version, ...meta } = current
       const time = new Date().toISOString()
-      await this.commit(book, current, before?.content ?? current.content, {
-        ...meta,
-        title: before?.title ?? current.title,
-        generation: operationId,
-        updatedAt: time,
-        trashedAt: before ? null : time
-      })
+      await this.commit(
+        book,
+        current,
+        before?.content ?? current.content,
+        {
+          ...meta,
+          title: before?.title ?? current.title,
+          generation: operationId,
+          updatedAt: time,
+          trashedAt: before ? null : time
+        },
+        before?.content
+      )
       if (!before) {
         const { folder } = await this.locate(book, id)
         const target = await this.safe(

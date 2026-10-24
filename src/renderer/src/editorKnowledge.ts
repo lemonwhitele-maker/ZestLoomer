@@ -17,7 +17,7 @@ export function knowledgeEntries(
   // Characters take precedence when two entries share a name.
   for (const kind of ['characters', 'settings'] as const) {
     for (const document of documents) {
-      if (document.kind !== kind || document.trashedAt) continue
+      if (document.kind !== kind || document.trashedAt || document.readonlyExample) continue
       for (const value of [document.title, ...knowledgeAliases(content[document.id] || '')]) {
         const name = value.trim()
         if (!name || /[\r\n]/.test(name)) continue

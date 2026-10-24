@@ -3,16 +3,18 @@ import { lineSeparator, normalizeLineEndings } from './lineEndings'
 
 export type TemplateChoice = 'basic' | 'blank'
 export const templates = {
-  characters: '### 核心定位\n\n### 外貌与衣着\n\n### 当前状态\n\n### 事实与经历\n',
+  characters: '### 核心定位\n\n### 外貌与衣着\n\n### 当前状态\n\n### 事实与经历\n\n### 经典发言\n',
   settings: '### 定义\n\n### 规则与边界\n\n### 具体内容与记录\n'
 } as const
 export function initialContent(kind: DocumentKind, choice: TemplateChoice): string {
+  if (kind === 'foreshadows')
+    return JSON.stringify({ content: '', startChapterId: null, endChapterId: null }, null, 2) + '\n'
   return choice === 'basic' && (kind === 'characters' || kind === 'settings') ? templates[kind] : ''
 }
 
 export const templateVersion = 2
 const headings = {
-  characters: ['核心定位', '外貌与衣着', '当前状态', '事实与经历'],
+  characters: ['核心定位', '外貌与衣着', '当前状态', '事实与经历', '经典发言'],
   settings: ['定义', '规则与边界', '具体内容与记录']
 } as const
 
@@ -29,13 +31,14 @@ export function consistentTemplate(kind: DocumentKind, content: string): string 
   let current = prefix
   let fence = ''
   for (const line of normalizeLineEndings(content, '\n').split('\n')) {
-    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1]
+    const unquoted = line.replace(/^\s{0,3}>\s?/, '')
+    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(unquoted)?.[1]
     if (marker) {
       if (!fence) fence = marker
       else if (
         marker[0] === fence[0] &&
         marker.length >= fence.length &&
-        /^\s*[`~]+\s*$/.test(line)
+        /^\s*[`~]+\s*$/.test(unquoted)
       )
         fence = ''
       current.push(line)
@@ -55,7 +58,7 @@ export function consistentTemplate(kind: DocumentKind, content: string): string 
   // Unstructured prose goes into the record section without guessing its category.
   let preamble = prefix.join('\n').trim()
   if (!sections.size && preamble) {
-    sections.set(required.at(-1)!, [preamble])
+    sections.set(kind === 'characters' ? '事实与经历' : '具体内容与记录', [preamble])
     preamble = ''
   }
   const result =

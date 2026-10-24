@@ -1,8 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { LoomAPI } from '../shared/documents'
+import type { ZestLoomerAPI } from '../shared/documents'
 import type { AgentEvent } from '../shared/agent'
-const invoke = (name: string, ...args: unknown[]) => ipcRenderer.invoke(`loom:${name}`, ...args)
-const api: LoomAPI = {
+const invoke = (name: string, ...args: unknown[]) =>
+  ipcRenderer.invoke(`zestloomer:${name}`, ...args)
+const api: ZestLoomerAPI = {
+  story: {
+    match: (book, revision) => invoke('story:match', book, revision),
+    bindings: (book) => invoke('story:bindings', book),
+    bind: (input) => invoke('story:bind', input),
+    read: (book, ids) => invoke('story:read', book, ids),
+    foreshadows: (book, offset, limit) => invoke('story:foreshadows', book, offset, limit)
+  },
   tools: {
     config: () => invoke('tools:config'),
     configure: (input) => invoke('tools:configure', input),
@@ -29,6 +37,8 @@ const api: LoomAPI = {
     cancelSearch: (book) => invoke('workspace:search-cancel', book)
   },
   agent: {
+    heavySettings: () => invoke('agent:heavy-settings'),
+    saveHeavySettings: (settings) => invoke('agent:heavy-save', settings),
     exportLog: (book, id) => invoke('agent:export-log', book, id),
     bind: (book) => invoke('agent:bind', book),
     snapshot: (book) => invoke('agent:snapshot', book),
@@ -47,12 +57,13 @@ const api: LoomAPI = {
       invoke('agent:preferences', book, id, profileId, archived),
     onEvent(listener) {
       const handler = (_event: unknown, payload: AgentEvent) => listener(payload)
-      ipcRenderer.on('loom:agent:event', handler)
-      return () => ipcRenderer.removeListener('loom:agent:event', handler)
+      ipcRenderer.on('zestloomer:agent:event', handler)
+      return () => ipcRenderer.removeListener('zestloomer:agent:event', handler)
     }
   },
   bootstrap: () => invoke('bootstrap'),
   createBook: (title) => invoke('create-book', title),
+  renameBook: (bookId, title) => invoke('rename-book', bookId, title),
   openBook: () => invoke('open-book'),
   list: (book) => invoke('list', book),
   create: (book, kind, title, template) => invoke('create', book, kind, title, template),
@@ -69,13 +80,13 @@ const api: LoomAPI = {
   onClose(handler) {
     const listener = () => {
       void handler()
-        .then((ok) => ipcRenderer.send('loom:close-result', ok))
-        .catch(() => ipcRenderer.send('loom:close-result', false))
+        .then((ok) => ipcRenderer.send('zestloomer:close-result', ok))
+        .catch(() => ipcRenderer.send('zestloomer:close-result', false))
     }
-    ipcRenderer.on('loom:before-close', listener)
+    ipcRenderer.on('zestloomer:before-close', listener)
     return () => {
-      ipcRenderer.removeListener('loom:before-close', listener)
+      ipcRenderer.removeListener('zestloomer:before-close', listener)
     }
   }
 }
-contextBridge.exposeInMainWorld('loom', api)
+contextBridge.exposeInMainWorld('zestloomer', api)

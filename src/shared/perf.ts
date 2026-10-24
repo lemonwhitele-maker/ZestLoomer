@@ -1,3 +1,5 @@
+import { environmentValue } from './environment'
+
 export class PerfCounters {
   documentReads = 0
   draftWrites = 0
@@ -12,7 +14,7 @@ export class PerfCounters {
   enabled = false
 
   constructor() {
-    this.enabled = typeof process !== 'undefined' && process.env?.LOOM_PERF === '1'
+    this.enabled = typeof process !== 'undefined' && environmentValue('PERF', process.env) === '1'
   }
 
   countDocumentRead() {

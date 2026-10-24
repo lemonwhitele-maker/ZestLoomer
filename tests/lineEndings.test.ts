@@ -3,7 +3,20 @@ import assert from 'node:assert/strict'
 import { EditorState } from '@codemirror/state'
 import { changedSource } from '../src/renderer/src/editorSource'
 import { agentSelection } from '../src/renderer/src/editorSelection'
-import { normalizeModelText } from '../src/shared/lineEndings'
+import { normalizeChapterCandidate, normalizeModelText } from '../src/shared/lineEndings'
+
+test('chapter candidates normalize real breaks only, preserve nonblank text and are idempotent', () => {
+  for (const separator of ['\n', '\r\n', '\r']) {
+    for (const source of ['甲\n乙', '甲\n\n乙', '\r甲\r\n \t\r\n\n乙\n\n']) {
+      const result = normalizeChapterCandidate(source, separator)
+      assert.equal(result, `甲${separator}${separator}乙`)
+      assert.equal(normalizeChapterCandidate(result, separator), result)
+    }
+  }
+  assert.equal(normalizeChapterCandidate(' \t\r\n\t\n'), '')
+  const text = '  甲。乙。 /n \\n `\\n\\n` C:\\notes\\new https://example.com/n/n  '
+  assert.equal(normalizeChapterCandidate(text), text)
+})
 
 test('model paragraph markers are repaired without changing code, URLs or paths', () => {
   assert.equal(normalizeModelText('甲/n/n乙\\n\\n丙\r\n丁', '\r\n'), '甲\r\n\r\n乙\r\n\r\n丙\r\n丁')

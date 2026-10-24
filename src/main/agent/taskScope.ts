@@ -1,13 +1,26 @@
+import { historyProjection } from './historyProjection'
 import type { AgentMessage, AgentWorkspace } from '../../shared/agent'
 import type { DocumentMeta } from '../../shared/documents'
 
 export function taskRequest(messages: AgentMessage[]): string {
   const last = messages.at(-1)?.text.trim() || ''
   if (/^(继续|接着做|接着|继续整理|继续完成)[。！!\s]*$/.test(last)) {
+    const projection = historyProjection(messages.slice(0, -1))
+    const ids = new Set(
+      [...projection.olderTurns, ...projection.recentTurns].map((t) => t.request.id)
+    )
+    const unresolved = new Set(
+      projection.excludedEvents.filter((e) => e.request).map((e) => e.turnId)
+    )
     return (
       [...messages.slice(0, -1)]
         .reverse()
-        .find((m) => m.role === 'user' && !/^(继续|接着)/.test(m.text.trim()))?.text || last
+        .find(
+          (m) =>
+            m.role === 'user' &&
+            (ids.has(m.id) || unresolved.has(m.turnId || `legacy:${m.id}`)) &&
+            !/^(继续|接着)/.test(m.text.trim())
+        )?.text || last
     )
   }
   return last

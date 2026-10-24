@@ -17,7 +17,7 @@ const tools: Record<string, string> = {
 </script>
 <template>
   <article v-if="active && conversationId === selectedId" class="agent-message assistant">
-    <small>Loom · {{ toolText ? tools[toolText] || '处理中' : '正在回复' }}</small>
+    <small>ZestLoomer · {{ toolText ? tools[toolText] || '处理中' : '正在回复' }}</small>
     <div class="message-text">{{ liveText || '正在准备…' }}</div>
   </article>
 </template>

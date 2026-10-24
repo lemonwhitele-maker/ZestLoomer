@@ -18,7 +18,12 @@ const positions = new Map<string, EditorPosition>()
 export function readPosition(key: string): EditorPosition | undefined {
   if (positions.has(key)) return positions.get(key)
   try {
-    const value = JSON.parse(localStorage.getItem(`loom.editor-position:${key}`) || 'null')
+    // Existing Loom profiles retain their positions; subsequent writes use the new key.
+    const value = JSON.parse(
+      localStorage.getItem(`zestloomer.editor-position:${key}`) ??
+        localStorage.getItem(`loom.editor-position:${key}`) ??
+        'null'
+    )
     if (
       value &&
       ['anchor', 'head', 'scrollTop'].every(
@@ -37,7 +42,7 @@ export function readPosition(key: string): EditorPosition | undefined {
 export function writePosition(key: string, value: EditorPosition): void {
   positions.set(key, value)
   try {
-    localStorage.setItem(`loom.editor-position:${key}`, JSON.stringify(value))
+    localStorage.setItem(`zestloomer.editor-position:${key}`, JSON.stringify(value))
   } catch {
     /* Keep the in-memory position when storage is unavailable. */
   }

@@ -10,10 +10,93 @@ import { defaultPolicy, estimateTokens, inputLimit } from '../src/main/agent/bud
 import { toolDefinitions } from '../src/main/agent/documents'
 import { ScriptedRuntime, type Completion } from '../src/main/agent/runtime'
 import type { Conversation } from '../src/shared/agent'
+import { defaultHeavySettings } from '../src/shared/heavyAgent'
 
 const call = (name: string, args: unknown, step: number): Completion => ({
   text: '',
   calls: [{ id: `call-${step}`, name, arguments: JSON.stringify(args) }]
+})
+
+test('sent selections retain exact text and backend-derived absolute lines with or without chapter context', async () => {
+  await fs.mkdir(resolve('.test-artifacts'), { recursive: true })
+  const root = await fs.mkdtemp(resolve('.test-artifacts/selection-context-'))
+  const store = new DocumentStore()
+  const book = await store.createBook(root, '选区行号')
+  const content = '开头😀\r\n\r\n前选中后\n末行\r尾声</selection>&\r\n'
+  const chapter = (await store.create(book.id, 'chapters', '混合换行', { content })).document
+  const cases = [
+    { text: '选中', startLine: 3, endLine: 3 },
+    { text: '选中后\n末', startLine: 3, endLine: 4 },
+    { text: '前选中后\n', startLine: 3, endLine: 3 },
+    { text: '😀', startLine: 1, endLine: 1 },
+    { text: '</selection>&', startLine: 5, endLine: 5 },
+    { text: '\r\n', from: content.indexOf('\r\n') + 2, startLine: 2, endLine: 2 },
+    { text: content, startLine: 1, endLine: 5 },
+    { text: '\r\n', from: content.length - 2, startLine: 5, endLine: 5 },
+    { text: '选中', draft: '新增行\n' + content, startLine: 4, endLine: 4 }
+  ]
+  for (const chapterContext of [false, true]) {
+    let sent: any
+    const service = new AgentService(
+      store,
+      () =>
+        new ScriptedRuntime((messages) => {
+          sent = JSON.parse(messages.at(-2)!.content!.split('：').slice(1).join('：'))
+          return { text: '完成', calls: [] }
+        }),
+      undefined,
+      undefined,
+      async () => ({ ...defaultHeavySettings, chapterContext })
+    )
+    for (const item of cases) {
+      sent = undefined
+      const source = item.draft ?? content
+      const from = item.from ?? source.indexOf(item.text)
+      const to = from + item.text.length
+      const c = await service.create(book.id, '选区范围')
+      await service.start(book.id, c.id, '分析选区', {
+        documentId: chapter.id,
+        savedVersion: chapter.version,
+        editorContent: item.draft,
+        // Caller-provided line metadata must be recomputed from the frozen source.
+        selection: { from, to, text: item.text, startLine: 999, endLine: 999 }
+      })
+      await service.idle()
+      assert.deepEqual(sent?.selection, {
+        from,
+        to,
+        startLine: item.startLine,
+        endLine: item.endLine
+      })
+      assert.equal(sent.documentId, chapter.id)
+      assert.equal(sent.savedVersion, chapter.version)
+      assert.equal(sent.editorContent, undefined)
+      assert.equal(sent.currentContext.length, chapterContext ? 1 : 0)
+      const escaped = (s: string) =>
+        s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+      const expected = `<chapter-context>${chapterContext ? escaped(source.slice(0, from)) : ''}<selection>${escaped(item.text)}</selection>${chapterContext ? escaped(source.slice(to)) : ''}</chapter-context>`
+      assert.equal(
+        chapterContext ? sent.currentContext[0].content : sent.selectionContent,
+        expected
+      )
+      if (chapterContext) assert.equal(sent.selectionContent, undefined)
+      const saved = (await service.snapshot(book.id)).conversations.find(
+        (value) => value.id === c.id
+      )!
+      assert.deepEqual(saved.messages[0].context?.workspace.selection, {
+        ...sent.selection,
+        text: item.text
+      })
+    }
+    sent = undefined
+    const c = await service.create(book.id, '无选区')
+    await service.start(book.id, c.id, '分析章节', {
+      documentId: chapter.id,
+      savedVersion: chapter.version
+    })
+    await service.idle()
+    assert.equal(sent?.selection, null)
+  }
 })
 
 test('current selection survives contradictory history and memory trimming beside the latest request', () => {
@@ -44,17 +127,23 @@ test('current selection survives contradictory history and memory trimming besid
     { contextTokens: 7000, outputTokens: 1024, retryOutputTokens: 1024 }
   ]) {
     const messages = assembleContext(c, '写作助手', { selection }, policy)
-    assert.match(messages[0].content!, /本轮编辑状态：有选区/)
+    assert.equal(messages[0].content, '写作助手')
+    assert.match(messages.at(-2)!.content!, /本轮编辑状态：有选区/)
     assert.equal(messages.at(-1)!.content, '现在是无选区吗？')
     const workspace = JSON.parse(messages.at(-2)!.content!.split('：').slice(1).join('：'))
-    assert.deepEqual(workspace.selection, selection)
-    assert.ok(messages.slice(1, -2).some((m) => m.content?.includes('目前无选区')))
+    assert.deepEqual(workspace.selection, { from: selection.from, to: selection.to })
+    assert.equal(
+      workspace.selectionContent,
+      `<chapter-context><selection>${selection.text}</selection></chapter-context>`
+    )
+    assert.ok(messages.slice(1, -2).some((m) => m.content?.includes('旧记录无可验证最终回答')))
     assert.ok(
       estimateTokens(JSON.stringify({ messages, tools: toolDefinitions })) <= inputLimit(policy)
     )
   }
   const cleared = assembleContext(c, '写作助手', {}, defaultPolicy)
-  assert.match(cleared[0].content!, /本轮编辑状态：未附带选区/)
+  assert.equal(cleared[0].content, '写作助手')
+  assert.match(cleared.at(-2)!.content!, /本轮编辑状态：未附带选区/)
   assert.equal(JSON.parse(cleared.at(-2)!.content!.split('：').slice(1).join('：')).selection, null)
 })
 
@@ -89,7 +178,12 @@ test('restarted Agent discovers, searches and pages archived history, then edits
         const result = () => JSON.parse(messages.at(-1)!.content!)
         if (phase === 'root') {
           const workspace = JSON.parse(messages.at(-2)!.content!.split('：').slice(1).join('：'))
-          assert.deepEqual(workspace.selection, { from: 3, to: 6, text: '旧段落' })
+          assert.deepEqual(workspace.selection, {
+            from: 3,
+            to: 6,
+            startLine: 1,
+            endLine: 1
+          })
           assert.deepEqual(workspace.conversationHistory, {
             directory: 'book/conversations/',
             currentPath: `book/conversations/${currentId}.md`,
@@ -128,20 +222,28 @@ test('restarted Agent discovers, searches and pages archived history, then edits
           return call('read', { path: `book/chapters/${chapter.id}.txt` }, step)
         }
         if (phase === 'edit') {
-          assert.equal(result().text, chapter.content)
+          assert.equal(result().lines[0].text, chapter.content)
           phase = 'invalid-write'
           return call(
             'edit',
             {
               path: `book/chapters/${chapter.id}.txt`,
-              edits: [{ oldText: '旧段落', newText: '找到红色钥匙' }]
+              baseVersion: chapter.version,
+              edits: [
+                {
+                  mode: 'replace',
+                  target: { kind: 'selection' },
+                  oldText: '旧段',
+                  newText: '找到红色钥匙'
+                }
+              ]
             },
             step
           )
         }
         if (phase === 'invalid-write') {
-          assert.equal(result().code, 'ARGUMENT')
-          assert.match(result().message, /当前有选区.*newText.*不要传 oldText/)
+          assert.equal(result().code, 'SELECTION')
+          assert.match(result().message, /oldText.*完整冻结选区/)
           phase = 'retry-edit'
           return call(
             'write',
@@ -155,7 +257,11 @@ test('restarted Agent discovers, searches and pages archived history, then edits
           phase = 'done'
           return call(
             'edit',
-            { path: `book/chapters/${chapter.id}.txt`, edits: [{ newText: '找到红色钥匙' }] },
+            {
+              path: `book/chapters/${chapter.id}.txt`,
+              baseVersion: chapter.version,
+              edits: [{ mode: 'replace', target: { kind: 'selection' }, newText: '找到红色钥匙' }]
+            },
             step
           )
         }

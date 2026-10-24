@@ -11,9 +11,10 @@ import {
 } from 'vue'
 import { unwrap, type WorkspacePreferences } from '../../../shared/documents'
 import type { AgentConfig, AgentConfigInput } from '../../../shared/agent'
+import { defaultHeavySettings } from '../../../shared/heavyAgent'
 import type { ToolApiConfig } from '../../../shared/toolApi'
 
-type Section = 'writing' | 'ai' | 'books' | 'agent'
+type Section = 'writing' | 'ai' | 'books' | 'agent' | 'heavy'
 const props = defineProps<{
   initialSection: Section
   preferences: WorkspacePreferences
@@ -31,15 +32,39 @@ const emit = defineEmits<{
   appearance: [value: Partial<WorkspacePreferences>]
   bookAction: [action: 'exportBook' | 'backup' | 'import']
 }>()
-const api = window.loom
+const api = window.zestloomer
 const section = ref<Section>(props.initialSection)
 const aiMode = ref<'agent' | 'tools'>('agent')
 const tabs: { id: Section; title: string; description: string }[] = [
   { id: 'writing', title: '写作显示', description: '字体与阅读节奏' },
   { id: 'ai', title: 'AI 接入', description: '连接、模型与默认配置' },
   { id: 'agent', title: 'Agent 偏好', description: '意图识别与替换对照' },
+  { id: 'heavy', title: '超重agent', description: '追加指令与章节资料' },
   { id: 'books', title: '作品与备份', description: '导出与本地备份' }
 ]
+const heavyForm = reactive({ ...defaultHeavySettings })
+const heavyRoot = ref('')
+const heavyBaseline = ref(JSON.stringify(heavyForm))
+const heavyRootBaseline = ref('')
+const builtinPrompt = ref('')
+const heavyLoaded = ref(false)
+const heavyError = ref('')
+async function loadHeavy(): Promise<void> {
+  try {
+    const value = unwrap(await api.agent.heavySettings())
+    Object.assign(heavyForm, value.settings)
+    heavyRoot.value = value.root || ''
+    heavyRootBaseline.value = heavyRoot.value
+    heavyBaseline.value = JSON.stringify(heavyForm)
+    builtinPrompt.value = value.instructions
+    heavyLoaded.value = true
+    heavyError.value = ''
+  } catch (e) {
+    heavyError.value = String(e)
+    heavyLoaded.value = false
+  }
+}
+onMounted(loadHeavy)
 const dialog = ref<HTMLElement>()
 const previousFocus = document.activeElement as HTMLElement | null
 const config = shallowRef(props.config)
@@ -123,6 +148,8 @@ watch(
     JSON.stringify(form),
     JSON.stringify(appearance),
     JSON.stringify(toolForm),
+    JSON.stringify(heavyForm),
+    heavyRoot.value,
     JSON.stringify(agentPreferences)
   ],
   () => {
@@ -132,15 +159,29 @@ watch(
   { flush: 'sync' }
 )
 const dirty = computed(() =>
-  section.value === 'agent'
-    ? JSON.stringify(agentPreferences) !== agentBaseline.value
-    : section.value === 'ai'
-      ? aiMode.value === 'tools'
-        ? JSON.stringify(toolForm) !== toolBaseline.value
-        : JSON.stringify(form) !== baseline.value
-      : section.value === 'writing' && JSON.stringify(appearance) !== appearanceBaseline.value
+  section.value === 'heavy'
+    ? JSON.stringify(heavyForm) !== heavyBaseline.value ||
+      heavyRoot.value !== heavyRootBaseline.value
+    : section.value === 'agent'
+      ? JSON.stringify(agentPreferences) !== agentBaseline.value
+      : section.value === 'ai'
+        ? aiMode.value === 'tools'
+          ? JSON.stringify(toolForm) !== toolBaseline.value
+          : JSON.stringify(form) !== baseline.value
+        : section.value === 'writing' && JSON.stringify(appearance) !== appearanceBaseline.value
 )
 const validation = computed(() => {
+  if (section.value === 'heavy') {
+    if (!heavyLoaded.value) return '配置未加载，请处理读取错误后重试。'
+    if (!heavyRoot.value) return 'BookList 配置位置尚未加载。'
+    if (
+      !Number.isSafeInteger(heavyForm.previousTailChars) ||
+      heavyForm.previousTailChars < 1 ||
+      heavyForm.previousTailChars > 1000000
+    )
+      return '前章结尾长度须为 1–1000000 的整数。'
+    return ''
+  }
   if (section.value === 'writing') {
     if (!Number.isFinite(appearance.size) || appearance.size < 12 || appearance.size > 32)
       return '字号应在 12–32 之间。'
@@ -231,7 +272,13 @@ async function save(): Promise<boolean> {
   error.value = ''
   status.value = ''
   try {
-    if (section.value === 'agent') {
+    if (section.value === 'heavy') {
+      const value = unwrap(await api.agent.saveHeavySettings({ ...heavyForm }))
+      Object.assign(heavyForm, value.settings)
+      heavyBaseline.value = JSON.stringify(heavyForm)
+      heavyRootBaseline.value = value.root || ''
+      status.value = '已保存，仅影响后续新建对话。'
+    } else if (section.value === 'agent') {
       unwrap(
         await api.preferences(
           JSON.parse(JSON.stringify({ ...props.preferences, ...agentPreferences }))
@@ -277,7 +324,11 @@ async function save(): Promise<boolean> {
   }
 }
 function discard(): void {
-  if (section.value === 'agent') Object.assign(agentPreferences, JSON.parse(agentBaseline.value))
+  if (section.value === 'heavy') {
+    Object.assign(heavyForm, JSON.parse(heavyBaseline.value))
+    heavyRoot.value = heavyRootBaseline.value
+  } else if (section.value === 'agent')
+    Object.assign(agentPreferences, JSON.parse(agentBaseline.value))
   else if (section.value === 'ai' && aiMode.value === 'tools')
     Object.assign(toolForm, JSON.parse(toolBaseline.value))
   else if (section.value === 'ai') loadProfile()
@@ -584,6 +635,61 @@ onBeforeUnmount(() => {
               </p>
             </fieldset>
           </template>
+          <template v-else-if="section === 'heavy'">
+            <h3>超重agent</h3>
+            <p>
+              保存影响后续新建对话，已有对话保持原配置。当前 BookList
+              内所有作品共用设置，每轮刷新当前作品资料。
+            </p>
+            <p v-if="heavyError" role="alert" class="error-text">{{ heavyError }}</p>
+            <button v-if="!heavyLoaded" @click="loadHeavy">重新加载配置</button>
+            <fieldset class="settings-fields" :disabled="!heavyLoaded || saving">
+              <p>配置保存在当前 BookList：{{ heavyRoot }}</p>
+              <label class="settings-check"
+                ><input v-model="heavyForm.appendPrompt" type="checkbox" />追加 prompt</label
+              >
+              <label
+                >追加指令<textarea v-model="heavyForm.prompt" aria-label="追加指令" rows="7" />
+              </label>
+              <p v-if="heavyForm.appendPrompt && !heavyForm.prompt" class="field-help">
+                尚未填写追加指令。
+              </p>
+              <label class="settings-check"
+                ><input v-model="heavyForm.chapterOutline" type="checkbox" />追加本章大纲全文</label
+              >
+              <label class="settings-check"
+                ><input v-model="heavyForm.chapterContext" type="checkbox" />追加本章上下文（最多
+                8000 字符中心窗口）</label
+              >
+              <label class="settings-check"
+                ><input
+                  v-model="heavyForm.previousContext"
+                  type="checkbox"
+                />追加前文资料（前三章大纲及上一章结尾）</label
+              >
+              <label
+                >上一章结尾字符数<input
+                  v-model.number="heavyForm.previousTailChars"
+                  type="number"
+                  min="1"
+                  max="1000000"
+              /></label>
+            </fieldset>
+            <p class="field-help">
+              按 Unicode 码点计数；完整显式选区不受 8000
+              窗口限制。资料超出模型容量时停止发送，不截断大纲或追加指令。
+            </p>
+            <p class="field-help">
+              超重agent 设置与 API 配置统一保存在书库配置目录（新书库为 .zestloomer，旧书库兼容
+              .loom） 下；对话保存在各作品目录内。备份整个 BookList
+              可一并保留，单作品备份不包含书库设置。
+            </p>
+            <details>
+              <summary>内置 system prompt（只读）</summary>
+              <pre class="prompt-preview">{{ builtinPrompt }}</pre>
+              <p>此处直接展示运行内置指令；本轮资料、选区和历史另行装配，可在运行日志追溯。</p>
+            </details>
+          </template>
           <template v-else-if="section === 'ai'">
             <h3>AI 接入</h3>
             <div class="ai-mode-picker" aria-label="AI 配置类型">
@@ -603,7 +709,9 @@ onBeforeUnmount(() => {
               </button>
             </div>
             <template v-if="aiMode === 'agent'">
-              <p class="muted">配置在应用内共享；会话可以单独选择。保存备用配置不会改变默认项。</p>
+              <p class="muted">
+                配置在当前 BookList 内共享；会话可以单独选择。保存备用配置不会改变默认项。
+              </p>
               <div class="profile-picker">
                 <label
                   >接入配置<select
@@ -896,9 +1004,11 @@ onBeforeUnmount(() => {
                 ? aiMode === 'tools'
                   ? '保存工具 API 配置'
                   : '保存 Agent 配置'
-                : section === 'agent'
-                  ? '保存 Agent 偏好'
-                  : '保存显示设置'
+                : section === 'heavy'
+                  ? '保存超重agent 设置'
+                  : section === 'agent'
+                    ? '保存 Agent 偏好'
+                    : '保存显示设置'
           }}
         </button>
       </footer>
@@ -933,6 +1043,15 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.prompt-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+textarea {
+  width: 100%;
+  resize: vertical;
+}
 .ai-mode-picker {
   display: flex;
   gap: 8px;

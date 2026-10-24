@@ -1,7 +1,7 @@
 import {
   unwrap,
   type DocumentSnapshot,
-  type LoomAPI,
+  type ZestLoomerAPI,
   type OpenDocument,
   type Draft
 } from '../../shared/documents'
@@ -36,7 +36,7 @@ export class DocumentSession {
   constructor(
     readonly bookId: string,
     opened: OpenDocument,
-    private api: Pick<LoomAPI, 'save' | 'draft'>,
+    private api: Pick<ZestLoomerAPI, 'save' | 'draft'>,
     private changed: (change?: SessionChange) => void = () => {},
     private delay = 650
   ) {
@@ -71,7 +71,7 @@ export class DocumentSession {
   }
 
   edit(content: string, title = this.title): void {
-    if (this.document.trashedAt) return
+    if (this.document.trashedAt || this.document.readonlyExample) return
     this.content = content
     this.title = title
     this.revision++

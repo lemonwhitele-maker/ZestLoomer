@@ -24,3 +24,7 @@ test-results/
 !.env.example
 agent.json
 workspace.json
+tool-api.json
+.loom/
+.zestloomer/
+BookList/
