@@ -24,6 +24,7 @@ export interface HeavySettingsView {
   instructions: string
 }
 export interface HeavyContextBlock {
+  utf16Start?: number
   purpose: string
   id: string
   title: string

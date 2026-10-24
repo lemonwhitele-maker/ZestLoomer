@@ -3,7 +3,14 @@ import { rankText } from './relevance'
 import { randomUUID, createHash } from 'node:crypto'
 import { DocumentStore, DocumentError } from '../documents'
 import { kinds, type DocumentKind, type DocumentSnapshot } from '../../shared/documents'
-import type { AgentWorkspace, SourceRef, ToolName } from '../../shared/agent'
+import { proposalNotice } from './proposalContext'
+import type {
+  HistoryProjection,
+  ProposalContext,
+  AgentWorkspace,
+  SourceRef,
+  ToolName
+} from '../../shared/agent'
 import { templates } from '../../shared/templates'
 import { BookSearchIndex } from './search'
 import { relatedContext } from './related'
@@ -86,10 +93,10 @@ const descriptions = {
 }
 export const help = {
   'help/index.md':
-    '正文／大纲的 chapterOutlineBinding 是确定映射；伏笔的 foreshadowChapters 是章节定位。附件不算读取目标原文，修改前须另行 read。关系变化时分页须重读，提案接受复核实际依赖关系。Loom 工具协议 v2：list_files/read/create/write/edit。书内路径由工具返回，所有写工具只创建待审阅提案。read({path:目录,query:文字}) 检索；摘要不是原文读取。真实文档以 lines 展示绝对行号，eol 是原有换行；fragment 为行内 UTF-16 偏移，complete:false 的超长行须 nextCursor 补齐。字符 range 不是行号，不能用于 edit。requestedRangeComplete 只说明请求范围返回完毕，complete 才表示同版本全文已读。全文替换必须完整读取目标。edit 必须传 baseVersion，无选区用行范围或文档边界，oldText 仅用于完整选区原文核验。详情 read help/edit.md。未确定的构想建议保存速记，人物和设定没有内容状态。',
+    '正文／大纲的 chapterOutlineBinding 是确定映射；伏笔的 foreshadowChapters 是章节定位。附件不算读取目标原文，修改前须另行 read。关系变化时分页须重读，提案接受复核实际依赖关系。ZestLoomer 工具协议 v2：list_files/read/create/write/edit。书内路径由工具返回，所有写工具只创建待审阅提案。read({path:目录,query:文字}) 检索；摘要不是原文读取。真实文档以 lines 展示绝对行号，eol 是原有换行；fragment 为行内 UTF-16 偏移，complete:false 的超长行须 nextCursor 补齐。字符 range 不是行号，不能用于 edit。requestedRangeComplete 只说明请求范围返回完毕，complete 才表示同版本全文已读。全文替换必须完整读取目标。edit 必须传 baseVersion，无选区用行范围或文档边界，oldText 仅用于完整选区原文核验。详情 read help/edit.md。未确定的构想建议保存速记，人物和设定没有内容状态。',
   'help/edit.md':
-    '协议 v2。read({path,startLine:12,endLine:14}) 补读完整目标行（两个行字段同时提供，不与 paths/cursor/query 混用）。行号从 1 起，空行占一行，末尾终止换行不新增虚拟行；空文档 totalLines:0。edit({path,baseVersion,edits:[{mode:"replace",target:{kind:"lines",startLine:12,endLine:14},newText:"范围完整新文本"}]})；句内小改动也返回整行。替换保留末行终止换行，空 newText 删行时一并删除该换行。插入只传新增文本：{mode:"insert",target:{kind:"before_line",line:12},newText:"新增段落"}，或 after_line；document_start/document_end 不传行号。边界插入沿用分段：已有空行分段的正文补足两个换行，其余文档至少一个；合计连接处已有换行，只补缺失部分，显式空行保留。文首/末插入须读完整首/末行；空文档须先 read。续写明确在文末时用 document_end，位置不明确先澄清。有效选区只允许一项 {mode:"replace",target:{kind:"selection"},newText:"完整选区替换文本"}；oldText 可省略，若传必须等于完整冻结选区，不得传子串或坐标。选区存在时不允许行替换和插入。无选区 oldText 一律拒绝。所有行号基于同一 baseVersion，1–20 项，不重算前项产生的偏移；拒绝重叠、同点插入及插入与替换边界冲突。完整读目标行只是最低定位证据，创作仍须补足上下文。',
-  'help/characters.md': `${descriptions.characters}\n新建时后端统一模板区块，缺失内容留空；不需要 YAML 元数据。名称在标题栏。当前状态写明故事阶段。无来源的信息留空。\n${templates.characters}`,
+    '协议 v2。read({path,startLine:12,endLine:14}) 补读完整目标行（两个行字段同时提供，不与 paths/cursor/query 混用）。行号从 1 起，空行占一行，末尾终止换行不新增虚拟行；空文档 totalLines:0。edit({path,baseVersion,edits:[{mode:"replace",target:{kind:"lines",startLine:12,endLine:14},newText:"范围完整新文本"}]})；句内小改动也返回整行。替换保留末行终止换行，空 newText 删行时一并删除该换行。插入只传新增文本：{mode:"insert",target:{kind:"before_line",line:12},newText:"新增段落"}，或 after_line；document_start/document_end 不传行号。正文提案的段落换行由后端统一处理。文首/末插入须读完整首/末行；空文档须先 read。续写明确在文末时用 document_end，位置不明确先澄清。有效选区只允许一项 {mode:"replace",target:{kind:"selection"},newText:"完整选区替换文本"}；oldText 可省略，若传必须等于完整冻结选区，不得传子串或坐标。选区存在时不允许行替换和插入。无选区 oldText 一律拒绝。所有行号基于同一 baseVersion，1–20 项，不重算前项产生的偏移；拒绝重叠、同点插入及插入与替换边界冲突。完整读目标行只是最低定位证据，创作仍须补足上下文。',
+  'help/characters.md': `${descriptions.characters}\n新建时后端统一模板区块，缺失内容留空；不需要 YAML 元数据。名称在标题栏。当前状态写明故事阶段。无来源的信息留空。经典发言使用“### 经典发言”区块及普通列表，可记录多条代表性台词、说话风格说明，允许留空。写作或润色对白时按需读取并参考，不机械复读，不将示例当成已发生剧情或客观事实；不擅自补写空字段，不为补字段重排已有资料。\n${templates.characters}`,
   'help/settings.md': `${descriptions.settings}\n新建时后端统一模板区块，缺失内容留空；不需要 YAML 元数据。\n${templates.settings}`,
   'help/foreshadows.md': `${descriptions.foreshadows}\n一条伏笔一个 .md；JSON 只能有三个固定字段，拒绝重复键。create/write/edit 均先生成提案。保留的旧引用失效可继续修改其他字段；新引用必须存在且未回收。`,
   'help/outlines.md': `${descriptions.outlines}\n独立平铺 Markdown 条目，不提供分卷、父子层级和 Agent 排序工具。`,
@@ -111,7 +118,7 @@ export const toolDefinitions = [
   {
     name: 'read',
     description:
-      '协议 v2：读取原文、批量/分页，或目录加 query 检索。真实文档只返回 lines（绝对行号、text、complete、原换行 eol），不重复全文 text。超长行 fragment 的偏移是 UTF-16 字符，必须续读完整行才可整行编辑。complete 表示同版本全文已读；requestedRangeComplete 仅表示请求范围完毕。path/paths/cursor 三选一；单文档 path 可同时指定 startLine/endLine（含首尾），不能与 query 合用。maxChars 包含行号与结构开销；按 nextCursor 续读。历史对话目录 book/conversations/ 可 list_files 或加 query 定位，再 read 返回路径。正文 relatedDocuments 是本次页面命中名称及别名的资料路径，仅供定位。book/views/outline.md 或 book/views/{文档ID}.md 仅供关联定位，不算原文读取。',
+      '协议 v2：读取原文、批量/分页，或目录加 query 检索。真实文档只返回 lines（绝对行号、text、complete、原换行 eol），不重复全文 text。超长行 fragment 的偏移是 UTF-16 字符，必须续读完整行才可整行编辑。complete 表示同版本全文已读；requestedRangeComplete 仅表示请求范围完毕。path/paths/cursor 三选一；单文档 path 可同时指定 startLine/endLine（含首尾），不能与 query 合用。maxChars 包含行号与结构开销；按 nextCursor 续读。提案可按上下文索引的 book/proposals/{提案ID}.json 只读分页读取；原始过程可显式读取同名 .raw.md（不代表最终回答）；历史分区映射可 read book/conversations/{对话ID}.history.json。历史对话目录 book/conversations/ 可 list_files 或加 query 定位，再 read 返回路径。正文 relatedDocuments 是本次页面命中名称及别名的资料路径，仅供定位。book/views/outline.md 或 book/views/{文档ID}.md 仅供关联定位，不算原文读取。',
     properties: {
       path: { type: 'string' },
       paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 12 },
@@ -124,13 +131,13 @@ export const toolDefinitions = [
   },
   {
     name: 'create',
-    description: '新建文档提案，尚不写文件；需 directory/title/content，可附 reason/sources。',
+    description:
+      '新建文档提案，尚不写文件；需 directory/title/content，可附 reason。来源由系统根据已交付的阅读证据自动记录。',
     properties: {
       directory: { type: 'string' },
       title: { type: 'string' },
       content: { type: 'string' },
-      reason: { type: 'string' },
-      sources: { type: 'array', items: { type: 'string' } }
+      reason: { type: 'string' }
     },
     required: ['directory', 'title', 'content']
   },
@@ -140,8 +147,7 @@ export const toolDefinitions = [
     properties: {
       path: { type: 'string' },
       content: { type: 'string' },
-      reason: { type: 'string' },
-      sources: { type: 'array', items: { type: 'string' } }
+      reason: { type: 'string' }
     },
     required: ['path', 'content']
   },
@@ -199,8 +205,7 @@ export const toolDefinitions = [
           }))
         }
       },
-      reason: { type: 'string' },
-      sources: { type: 'array', items: { type: 'string' } }
+      reason: { type: 'string' }
     },
     required: ['path', 'baseVersion', 'edits']
   }
@@ -252,10 +257,14 @@ export class BookDocumentAdapter {
       id: string
       title: string
       text: string
+      rawText?: string
+      omittedTurnIds?: unknown
+      projection?: HistoryProjection
       messages?: { id: string; turnId?: string; text: string }[]
     }[],
     private signal?: AbortSignal,
-    private deferredDelivery = false
+    private deferredDelivery = false,
+    private proposals?: () => ProposalContext
   ) {
     this.captureReferences(userText)
   }
@@ -278,6 +287,45 @@ export class BookDocumentAdapter {
   }
   acknowledgeDelivery(): void {
     this.delivered = structuredClone(this.reads)
+  }
+  seedSelection(story: StoryRead, from: number, to: number): void {
+    this.reads.set(story.document.id, {
+      doc: structuredClone(story.document),
+      binding: story.chapterOutlineBinding,
+      ranges: [{ start: from, end: to }]
+    })
+    this.captureReferences(story.document.content.slice(from, to))
+  }
+  readingProgress() {
+    return [...this.reads.values()].map(({ doc, ranges }) => {
+      const covered: { start: number; end: number }[] = []
+      for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+        const last = covered.at(-1)
+        if (last && range.start <= last.end) last.end = Math.max(last.end, range.end)
+        else covered.push({ ...range })
+      }
+      const missing: { start: number; end: number }[] = []
+      let end = 0
+      for (const range of covered) {
+        if (range.start > end) missing.push({ start: end, end: range.start })
+        end = range.end
+      }
+      if (end < doc.content.length) missing.push({ start: end, end: doc.content.length })
+      const lines = logicalLines(doc.content)
+      return {
+        path: documentPath(doc),
+        version: doc.version,
+        covered,
+        missing,
+        complete: missing.length === 0,
+        offsetUnit: 'UTF-16, end exclusive',
+        suggestedReads: missing.map((range) => ({
+          path: documentPath(doc),
+          startLine: lines.findIndex((line) => range.start < line.after) + 1,
+          endLine: lines.findIndex((line) => range.end <= line.after) + 1
+        }))
+      }
+    })
   }
   get evidence(): Map<string, ReadEntry> {
     return this.deferredDelivery ? this.delivered : this.reads
@@ -583,7 +631,8 @@ export class BookDocumentAdapter {
     if (path === 'book/views/outline.md' || /^book\/views\/(doc_[a-f0-9-]{36})\.md$/.test(path)) {
       const docs = await this.store.agentDocuments(this.bookId)
       const targetId =
-        /^book\/views\/(doc_[a-f0-9-]{36})\.md$/.exec(path)?.[1] || this.workspace.documentId
+        /^book\/views\/(doc_[a-f0-9-]{36})(\.raw)?\.md(?:#.*)?$/.exec(path)?.[1] ||
+        this.workspace.documentId
       if (targetId) {
         await this.store.agentRead(this.bookId, targetId)
         const snapshots: DocumentSnapshot[] = []
@@ -620,11 +669,59 @@ export class BookDocumentAdapter {
         max
       )
     }
-    const historyMatch = /^book\/conversations\/(conversation_[a-f0-9-]{36})\.md$/.exec(path)
+    const proposalMatch = /^book\/proposals\/(proposal_[a-f0-9-]{36})\.json$/.exec(path)
+    if (proposalMatch) {
+      const snapshot = this.proposals?.()
+      const content = snapshot?.contents.find((p) => p.id === proposalMatch[1])
+      if (!content) fail('NOT_FOUND', '提案不在本轮快照中')
+      return this.resultPage(
+        path,
+        JSON.stringify({
+          revision: snapshot!.revision,
+          notice: proposalNotice,
+          location: snapshot!.index.find((p) => p.id === proposalMatch[1]),
+          ...content
+        }),
+        start,
+        max
+      )
+    }
+    const mappingMatch = /^book\/conversations\/(conversation_[a-f0-9-]{36})\.history\.json$/.exec(
+      path
+    )
+    if (mappingMatch) {
+      const history = this.histories().find((c) => c.id === mappingMatch[1])
+      if (!history) fail('NOT_FOUND', '对话不存在')
+      return this.resultPage(
+        path,
+        JSON.stringify({
+          revision: history!.projection?.revision,
+          omittedTurnIds: history!.omittedTurnIds,
+          recentTurns: history!.projection?.recentTurns.map((t) => ({
+            turnId: t.turnId,
+            path: t.path
+          })),
+          olderTurns: history!.projection?.olderTurns.map((t) => ({
+            turnId: t.turnId,
+            path: t.path
+          })),
+          excludedEvents: history!.projection?.excludedEvents
+        }),
+        start,
+        max
+      )
+    }
+    const historyMatch =
+      /^book\/conversations\/(conversation_[a-f0-9-]{36})(\.raw)?\.md(?:#.*)?$/.exec(path)
     if (historyMatch) {
       const history = this.histories().find((c) => c.id === historyMatch[1])
       if (!history) fail('NOT_FOUND', '对话不存在')
-      return this.resultPage(path, `历史讨论，不是现行设定。\n${history!.text}`, start, max)
+      return this.resultPage(
+        path,
+        `历史讨论，不是现行设定。\n${historyMatch[2] ? history!.rawText || history!.text : history!.text}`,
+        start,
+        max
+      )
     }
     const { id, kind } = this.path(path)
     const story = snapshot ?? (await this.store.readWithBindings(this.bookId, [id], true))[0]
@@ -717,6 +814,7 @@ export class BookDocumentAdapter {
     const { id, kind } = this.path(path)
     const story = (await this.store.readWithBindings(this.bookId, [id]))[0]
     const d = story.document
+    if (d.readonlyExample) fail('READ_ONLY', '示例资料不可修改，请创建普通资料')
     const identity = (binding?: ChapterOutlineBinding) =>
       binding?.state === 'bound' ? binding.target.id : binding?.state
     if (identity(story.chapterOutlineBinding) !== identity(this.evidence.get(id)?.binding))
@@ -738,18 +836,6 @@ export class BookDocumentAdapter {
         ? [{ id: doc.id, targetId: binding.state === 'bound' ? binding.target.id : null }]
         : []
     })
-  }
-  async sources(args: Record<string, unknown>): Promise<SourceRef[]> {
-    if (args.sources === undefined) return []
-    if (
-      !Array.isArray(args.sources) ||
-      args.sources.length > 30 ||
-      args.sources.some((p) => typeof p !== 'string')
-    )
-      fail('ARGUMENT', 'sources 应为书内文档路径数组')
-    const refs: SourceRef[] = []
-    for (const path of args.sources as string[]) refs.push(sourceRef(await this.target(path, true)))
-    return refs
   }
 }
 export const allowedTools: ToolName[] = ['list_files', 'read', 'create', 'write', 'edit']

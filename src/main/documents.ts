@@ -7,6 +7,7 @@ import { BookCatalog } from './catalog'
 import { counters } from '../shared/perf'
 import { parseBindings, isDocumentId, validateForeshadow, parseForeshadow } from './storyLinks'
 import { initialContent } from '../shared/templates'
+import { bookExamples } from '../shared/examples'
 import { chapterOutlineMatches } from '../shared/chapterOutlineMatching'
 import type {
   BindingDependency,
@@ -200,14 +201,21 @@ export class DocumentStore {
     }
     return target
   }
-  async createBook(parent: string, title: string): Promise<Book> {
+  async createBook(parent: string, title: string, examples = false): Promise<Book> {
     const id = `book_${randomUUID()}`
-    const root = join(await fs.realpath(parent), `Loom-${id.slice(5, 13)}`)
+    const root = join(await fs.realpath(parent), `ZestLoomer-${id.slice(5, 13)}`)
     await fs.mkdir(root)
     const book: Book = { id, title: titleOf(title), root, format: 1 }
     await this.writer(join(root, 'book.json'), json({ id, title: book.title, format: 1 }))
     await this.initialize(book)
     this.books.set(id, book)
+    if (examples) {
+      for (const example of bookExamples)
+        await this.createAt(book, example.kind, example.title, {
+          content: example.content,
+          readonlyExample: true
+        })
+    }
     return book
   }
   renameBook(bookId: string, title: string): Promise<Book> {
@@ -228,7 +236,7 @@ export class DocumentStore {
       fail('PATH', '作品清单不能是符号链接')
     const meta = JSON.parse(await fs.readFile(join(root, 'book.json'), 'utf8'))
     if (meta.format !== 1 || !validId(meta.id) || !meta.id.startsWith('book_'))
-      fail('FORMAT', '不是支持的 Loom 作品；请选择包含有效 book.json 的作品目录')
+      fail('FORMAT', '不是支持的 ZestLoomer 作品；请选择包含有效 book.json 的作品目录')
     const book: Book = { id: meta.id, title: titleOf(meta.title), format: 1, root }
     const previous = this.books.get(book.id)
     if (previous && previous.root !== root)
@@ -907,7 +915,7 @@ export class DocumentStore {
     book: Book,
     kind: DocumentKind,
     title: string,
-    options: { content?: string; id?: string; operationId?: string }
+    options: { content?: string; id?: string; operationId?: string; readonlyExample?: boolean }
   ): Promise<DocumentSnapshot> {
     if (!kinds.includes(kind)) fail('KIND', '文档类型无效')
     if (kind === 'foreshadows' && options.content === undefined)
@@ -926,6 +934,7 @@ export class DocumentStore {
           .map((doc) => doc.order)
       ) + 1
     const meta: DocumentMeta = {
+      ...(options.readonlyExample ? { readonlyExample: true } : {}),
       id,
       kind,
       title: titleOf(title),
@@ -977,6 +986,7 @@ export class DocumentStore {
     meta: DocumentMeta,
     referenceBaseline?: string
   ): Promise<DocumentSnapshot> {
+    if (before.readonlyExample) fail('READ_ONLY', '示例资料不可修改，请复制为普通资料后编辑')
     if (before.kind === 'foreshadows')
       await this.validateForeshadowInternal(book, content, referenceBaseline ?? before.content)
     const { folder } = await this.locate(book, before.id)
@@ -1028,6 +1038,7 @@ export class DocumentStore {
         })
         return
       }
+      if (document.readonlyExample) fail('READ_ONLY', '示例资料不可修改，请复制后编辑')
       if (document.trashedAt) fail('TRASHED', '回收站文档不可写入草稿')
       if (
         typeof draft.content !== 'string' ||
@@ -1277,6 +1288,7 @@ export class DocumentStore {
         generation = randomUUID()
       for (const change of input.changes) {
         const before = await this.snapshot(book, change.id)
+        if (before.readonlyExample) fail('READ_ONLY', '示例资料不可重命名')
         if (before.trashedAt) fail('TRASHED', '回收站文档不能批量重命名')
         if (!change.version || change.version !== before.version)
           fail('CONFLICT', '文档已变化，请重新生成命名预览')
@@ -1887,6 +1899,7 @@ export class DocumentStore {
     return this.queue(bookId, async () => {
       const book = this.book(bookId)
       const current = await this.snapshot(book, id)
+      if (current.readonlyExample) fail('READ_ONLY', '示例资料不可撤销修改')
       if (current.generation === operationId) {
         if (
           current.content !== (before?.content ?? current.content) ||

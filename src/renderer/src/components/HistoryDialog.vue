@@ -10,7 +10,7 @@ const props = defineProps<{
   error?: string
 }>()
 const emit = defineEmits<{ close: []; restore: [entryId: string] }>()
-const api = (window.loom as typeof window.loom & { workspace: WorkspaceAPI }).workspace
+const api = (window.zestloomer as typeof window.zestloomer & { workspace: WorkspaceAPI }).workspace
 const entries = ref<HistoryEntry[]>([])
 const selected = ref<HistoryEntry | null>(null)
 const loading = ref(false)
@@ -128,7 +128,10 @@ watch(
         ><button
           class="primary"
           :disabled="
-            locked || !selected || selected.content === undefined || Boolean(document.trashedAt)
+            locked ||
+            !selected ||
+            selected.content === undefined ||
+            Boolean(document.trashedAt || document.readonlyExample)
           "
           @click="selected && emit('restore', selected.entryId)"
         >

@@ -11,7 +11,9 @@ import { ApiRuntime } from './agent/runtime'
 import { AgentConfigStore } from './agent/config'
 import { ToolApiService } from './toolApi'
 import { prepareLibrary, libraryBooks, locateBooks, storedBook } from './bookLibrary'
-import loomIcon from '../shared/assets/loom-logo.png?asset'
+import { userDataDirectory } from './dataPaths'
+import { environmentValue } from '../shared/environment'
+import zestloomerIcon from '../shared/assets/zestloomer-logo.png?asset'
 import {
   defaultPreferences,
   type Book,
@@ -19,13 +21,10 @@ import {
   type WorkspacePreferences
 } from '../shared/documents'
 
-app.setName('Loom Preview')
-if (process.platform === 'win32') app.setAppUserModelId('io.loom.novelworkspace.preview')
-// Preview uses its own profile and ignores the production application's environment and pointers.
-app.setPath(
-  'userData',
-  process.env.LOOM_PREVIEW_USER_DATA || join(app.getPath('appData'), 'Loom Preview')
-)
+app.setName('ZestLoomer')
+if (process.platform === 'win32') app.setAppUserModelId('io.zestloomer.novelworkspace')
+// Fresh profiles use ZestLoomer; existing Loom profiles remain usable without copying secrets.
+app.setPath('userData', userDataDirectory(app.getPath('appData')))
 const store = new DocumentStore()
 let heavySettings: HeavySettingsStore
 let agentConfig: AgentConfigStore
@@ -36,7 +35,7 @@ const agent = new AgentService(
   (profileId) => new ApiRuntime(agentConfig.get(profileId), agentConfig.key(profileId)),
   (event) => {
     if (window && !window.isDestroyed() && event.bookId === boundAgentBook)
-      window.webContents.send('loom:agent:event', event)
+      window.webContents.send('zestloomer:agent:event', event)
   },
   (user, assistant, signal) => toolApi.generateTitle(user, assistant, signal),
   async () => (await heavySettings.read()).settings
@@ -68,7 +67,7 @@ async function remember(book: Book): Promise<Book> {
   return book
 }
 function register(name: string, handler: (...args: any[]) => unknown): void {
-  ipcMain.handle(`loom:${name}`, async (event, ...args): Promise<Result<unknown>> => {
+  ipcMain.handle(`zestloomer:${name}`, async (event, ...args): Promise<Result<unknown>> => {
     try {
       if (
         !window ||
@@ -196,10 +195,10 @@ function registerHandlers(): void {
       : readTextImport(selected.filePaths[0], encoding)
   })
   register('create-book', async (title: string) => {
-    return remember(await store.createBook(libraryRoot, title))
+    return remember(await store.createBook(libraryRoot, title, true))
   })
   register('open-book', async () => {
-    const root = await chooseDirectory('打开 Loom 作品目录（包含 book.json）')
+    const root = await chooseDirectory('打开 ZestLoomer 作品目录（包含 book.json）')
     return root ? remember(await store.openBook(root)) : null
   })
   register('rename-book', async (bookId: string, title: string) => {
@@ -345,7 +344,7 @@ function registerHandlers(): void {
     await store.backup(bookId, join(parent, `${basename(book.root)}-backup-${Date.now()}`))
     return true
   })
-  ipcMain.on('loom:close-result', async (event, success: boolean) => {
+  ipcMain.on('zestloomer:close-result', async (event, success: boolean) => {
     if (event.sender !== window?.webContents || !closeRequested) return
     closeRequested = false
     if (!success) return
@@ -360,13 +359,13 @@ function registerHandlers(): void {
 function createWindow(): void {
   closing = false
   window = new BrowserWindow({
-    title: 'Loom Preview',
-    icon: loomIcon,
+    title: 'ZestLoomer',
+    icon: zestloomerIcon,
     width: 1380,
     height: 900,
     minWidth: 900,
     minHeight: 640,
-    show: !process.env.LOOM_TEST_HIDDEN,
+    show: !environmentValue('TEST_HIDDEN'),
     autoHideMenuBar: true,
     backgroundColor: '#f6f4ef',
     webPreferences: {
@@ -384,7 +383,7 @@ function createWindow(): void {
     event.preventDefault()
     if (!closeRequested) {
       closeRequested = true
-      window?.webContents.send('loom:before-close')
+      window?.webContents.send('zestloomer:before-close')
     }
   })
   window.webContents.on('render-process-gone', () => {
@@ -402,10 +401,33 @@ if (!app.requestSingleInstanceLock()) app.quit()
 else
   void app.whenReady().then(async () => {
     await fs.mkdir(app.getPath('userData'), { recursive: true })
-    libraryRoot = process.env.LOOM_PREVIEW_BOOKLIST || join(app.getPath('userData'), 'BookList')
-    await fs.mkdir(libraryRoot, { recursive: true })
+    const pointer = join(app.getPath('userData'), 'library.json')
+    libraryRoot = environmentValue('BOOKLIST') || ''
+    if (!libraryRoot) {
+      try {
+        libraryRoot = JSON.parse(await fs.readFile(pointer, 'utf8')).root || ''
+        await fs.access(libraryRoot)
+      } catch {
+        libraryRoot = ''
+      }
+    }
+    if (!libraryRoot) {
+      const selected = await dialog.showOpenDialog({
+        title: '选择书库 BookList（保存作品、对话、API 和自定义设置）',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (selected.canceled || !selected.filePaths[0]) {
+        app.quit()
+        return
+      }
+      libraryRoot = selected.filePaths[0]
+      await atomicWrite(pointer, JSON.stringify({ root: libraryRoot }, null, 2))
+    }
     libraryConfig = await prepareLibrary(libraryRoot, app.getPath('userData'))
-    heavySettings = new HeavySettingsStore(libraryRoot)
+    heavySettings = new HeavySettingsStore(
+      libraryRoot,
+      join(app.getPath('userData'), 'heavy-agent-location.json')
+    )
     agentConfig = new AgentConfigStore(join(libraryConfig, 'agent.json'))
     toolApi = new ToolApiService(join(libraryConfig, 'tool-api.json'), agentConfig)
     try {

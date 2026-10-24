@@ -1,4 +1,5 @@
-import type { AgentMessage, TargetRewriteResult } from '../../shared/agent'
+import { historyProjection } from './historyProjection'
+import type { ProposalContext, AgentMessage, TargetRewriteResult } from '../../shared/agent'
 import { defaultPolicy, estimateTokens, inputLimit } from './budgets'
 import {
   cancellable,
@@ -17,29 +18,9 @@ export interface RewriteTurn {
 // Only explicit successful final responses qualify; legacy combined transcripts
 // cannot reliably distinguish tool narration from the final answer.
 export function rewriteHistory(messages: AgentMessage[]): RewriteTurn[] {
-  const turns: RewriteTurn[] = []
-  const invalid = new Set(
-    messages.filter((m) => m.outcome === 'failed' || m.outcome === 'cancelled').map((m) => m.turnId)
-  )
-  let user: AgentMessage | undefined
-  for (const message of messages) {
-    if (message.role === 'user') {
-      user = message
-      continue
-    }
-    if (
-      user?.turnId &&
-      !invalid.has(user.turnId) &&
-      message.turnId === user.turnId &&
-      message.outcome === 'completed' &&
-      message.finalResponse?.trim() &&
-      user.text.trim()
-    ) {
-      turns.push({ turnId: user.turnId, prompt: user.text, response: message.finalResponse })
-    }
-    user = undefined
-  }
-  return turns.slice(-8)
+  return historyProjection(messages)
+    .recentTurns.filter((t) => t.answer?.finalResponse?.trim() && t.request.text.trim())
+    .map((t) => ({ turnId: t.turnId, prompt: t.request.text, response: t.answer!.finalResponse! }))
 }
 
 const common = `你是请求澄清预处理器，不回答用户问题，不执行任务，不调用工具。
@@ -75,14 +56,30 @@ export async function rewriteTarget(
     input: RuntimeMessage[]
   ) => CompletionOptions & {
     completed?: (response: Completion) => Promise<void>
-  }
+  },
+  proposals?: ProposalContext
 ): Promise<TargetRewriteResult> {
   const prompt = messages.at(-1)!.text
   const history = rewriteHistory(messages.slice(0, -1))
   const available = history.length
   const input = (system: string): RuntimeMessage[] => [
     { role: 'system', content: system },
-    { role: 'user', content: JSON.stringify({ prompt, history }) }
+    {
+      role: 'user',
+      content: JSON.stringify({
+        prompt,
+        history,
+        ...(proposals
+          ? {
+              proposals: {
+                revision: proposals.revision,
+                index: proposals.index,
+                contents: proposals.contents.filter((p) => proposals.requiredIds.includes(p.id))
+              }
+            }
+          : {})
+      })
+    }
   ]
   const limit = inputLimit(runtime.policy || defaultPolicy)
   const fits = () =>

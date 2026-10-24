@@ -54,7 +54,10 @@ const caseSensitive = ref(false)
 const matchCount = ref(0)
 const readOnly = computed(() => {
   void props.tick
-  return Boolean(props.session.document.trashedAt) || props.locked
+  return (
+    Boolean(props.session.document.trashedAt || props.session.document.readonlyExample) ||
+    props.locked
+  )
 })
 const options = new Compartment()
 const highlights = new Compartment()

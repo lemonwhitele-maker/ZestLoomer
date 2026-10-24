@@ -62,6 +62,7 @@ export async function freezeHeavyContext(
       version: d.version,
       draft,
       start,
+      utf16Start: chars.slice(0, start).join('').length,
       end,
       total: chars.length,
       complete: start === 0 && end === chars.length,

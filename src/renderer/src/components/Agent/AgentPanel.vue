@@ -217,7 +217,7 @@ defineExpose({
               }}</strong>
               <ul v-if="current.memory[group].length">
                 <li v-for="item in current.memory[group]" :key="item.messageId">
-                  {{ item.role === 'user' ? '你' : 'Loom' }}：{{ item.text }}
+                  {{ item.role === 'user' ? '你' : 'ZestLoomer' }}：{{ item.text }}
                 </li>
               </ul>
               <p v-else>尚无记录</p>
@@ -279,7 +279,7 @@ defineExpose({
           :key="m.id"
           :class="['agent-message', m.role]"
         >
-          <small>{{ m.role === 'user' ? '你' : 'Loom' }}</small>
+          <small>{{ m.role === 'user' ? '你' : 'ZestLoomer' }}</small>
           <div class="message-text">{{ m.text }}</div>
           <details v-if="m.context" class="sent-context">
             <summary>发送时的上下文 · {{ m.context.document?.title || '未附带当前文档' }}</summary>
@@ -424,7 +424,7 @@ defineExpose({
         ref="composer"
         v-model="input"
         aria-label="给 Agent 的消息"
-        placeholder="讨论情节，或请 Loom 查阅并修改资料…"
+        placeholder="讨论情节，或请 ZestLoomer 查阅并修改资料…"
         maxlength="16000"
         :disabled="!current || current.archived || busy"
         @compositionstart="composing = true"

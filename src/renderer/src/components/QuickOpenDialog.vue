@@ -30,7 +30,7 @@ const results = computed(() =>
 )
 watch([query, mode], () => {
   clearTimeout(timer)
-  void window.loom.workspace.cancelSearch(props.bookId).catch(() => {})
+  void window.zestloomer.workspace.cancelSearch(props.bookId).catch(() => {})
   const token = ++request
   index.value = 0
   hits.value = []
@@ -40,7 +40,9 @@ watch([query, mode], () => {
   loading.value = true
   timer = setTimeout(async () => {
     try {
-      const value = unwrap(await window.loom.workspace.search(props.bookId, query.value.trim()))
+      const value = unwrap(
+        await window.zestloomer.workspace.search(props.bookId, query.value.trim())
+      )
       if (token === request) hits.value = value
     } catch (e) {
       if (token === request) error.value = e instanceof Error ? e.message : String(e)
@@ -81,7 +83,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   request++
   clearTimeout(timer)
-  void window.loom.workspace.cancelSearch(props.bookId).catch(() => {})
+  void window.zestloomer.workspace.cancelSearch(props.bookId).catch(() => {})
 })
 </script>
 

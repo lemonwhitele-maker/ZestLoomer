@@ -6,6 +6,14 @@ export function normalizeLineEndings(text: string, separator: string): string {
   return text.replace(/\r\n|\r|\n/g, separator)
 }
 
+/** Finalize a new chapter edit candidate; never apply to persisted source or other writes. */
+export function normalizeChapterCandidate(text: string, separator = '\n'): string {
+  return text
+    .split(/\r\n|\r|\n/)
+    .filter((line) => !/^[\t ]*$/.test(line))
+    .join(separator.repeat(2))
+}
+
 /** Add only missing boundary separators; retain all existing and explicit whitespace. */
 export function separateInsertion(
   source: string,

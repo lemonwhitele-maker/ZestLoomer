@@ -22,12 +22,12 @@ test('LOOM-029 heavy settings and conversation snapshots persist', async () => {
   await expect(page.locator('.settings-footer')).toContainText('已保存，仅影响后续新建对话')
   const create = () =>
     page.evaluate(async () => {
-      const boot = await window.loom.bootstrap()
+      const boot = await window.zestloomer.bootstrap()
       if (!boot.ok) throw new Error(boot.message)
       const bookId = boot.value.preferences.lastBookId!
-      const bound = await window.loom.agent.bind(bookId)
+      const bound = await window.zestloomer.agent.bind(bookId)
       if (!bound.ok) throw new Error(bound.message)
-      const c = await window.loom.agent.create(bookId, '快照测试')
+      const c = await window.zestloomer.agent.create(bookId, '快照测试')
       if (!c.ok) throw new Error(c.message)
       return c.value
     })
@@ -48,7 +48,10 @@ test('LOOM-029 heavy settings and conversation snapshots persist', async () => {
   })
   await electron.close()
   await launch()
-  const restored = await page.evaluate(async ({ bookId }) => window.loom.agent.bind(bookId), a)
+  const restored = await page.evaluate(
+    async ({ bookId }) => window.zestloomer.agent.bind(bookId),
+    a
+  )
   expect(restored.ok).toBe(true)
   if (restored.ok) {
     expect(restored.value.conversations.find((c) => c.id === a.id)?.heavySettings?.prompt).toBe(
@@ -66,9 +69,9 @@ async function launch(): Promise<void> {
       (entry): entry is [string, string] => typeof entry[1] === 'string'
     )
   )
-  env.LOOM_PREVIEW_USER_DATA = profile
-  env.LOOM_PREVIEW_BOOKLIST = root
-  env.LOOM_TEST_HIDDEN = '1'
+  env.ZESTLOOMER_USER_DATA = profile
+  env.ZESTLOOMER_BOOKLIST = root
+  env.ZESTLOOMER_TEST_HIDDEN = '1'
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
   electron = await _electron.launch({ args: ['.'], cwd: resolve('.'), env })
@@ -85,14 +88,17 @@ test.beforeEach(async () => {
   await fs.mkdir(resolve('.test-artifacts'), { recursive: true })
   root = await fs.mkdtemp(resolve('.test-artifacts/workspace-window-'))
   profile = join(root, 'profile')
-  if (process.env.LOOM_STORY_MODEL_CONFIG) {
-    await fs.mkdir(join(root, '.loom'), { recursive: true })
-    await fs.copyFile(process.env.LOOM_STORY_MODEL_CONFIG, join(root, '.loom', 'agent.json'))
-    if (process.env.LOOM_STORY_MODEL_PROFILE) {
-      const isolatedPath = join(root, '.loom', 'agent.json')
+  if (process.env.ZESTLOOMER_STORY_MODEL_CONFIG) {
+    await fs.mkdir(join(root, '.zestloomer'), { recursive: true })
+    await fs.copyFile(
+      process.env.ZESTLOOMER_STORY_MODEL_CONFIG,
+      join(root, '.zestloomer', 'agent.json')
+    )
+    if (process.env.ZESTLOOMER_STORY_MODEL_PROFILE) {
+      const isolatedPath = join(root, '.zestloomer', 'agent.json')
       const config = JSON.parse(await fs.readFile(isolatedPath, 'utf8'))
       const selected = config.profiles.find(
-        (item: { id: string }) => item.id === process.env.LOOM_STORY_MODEL_PROFILE
+        (item: { id: string }) => item.id === process.env.ZESTLOOMER_STORY_MODEL_PROFILE
       )
       if (!selected || !/gemini/i.test(selected.model))
         throw new Error('Selected test profile must be Gemini')
@@ -101,8 +107,10 @@ test.beforeEach(async () => {
         JSON.stringify({ ...config, profiles: [selected], defaultProfileId: selected.id })
       )
     }
-    if (process.env.LOOM_STORY_LOCAL_STATE) {
-      const original = JSON.parse(await fs.readFile(process.env.LOOM_STORY_LOCAL_STATE, 'utf8'))
+    if (process.env.ZESTLOOMER_STORY_LOCAL_STATE) {
+      const original = JSON.parse(
+        await fs.readFile(process.env.ZESTLOOMER_STORY_LOCAL_STATE, 'utf8')
+      )
       await fs.mkdir(profile, { recursive: true })
       await fs.writeFile(
         join(profile, 'Local State'),
@@ -132,18 +140,18 @@ test.afterEach(async () => {
 
 async function docs(): Promise<DocumentMeta[]> {
   return page.evaluate(async () => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const result = await window.loom.list(boot.value.preferences.lastBookId!)
+    const result = await window.zestloomer.list(boot.value.preferences.lastBookId!)
     if (!result.ok) throw new Error(result.message)
     return result.value
   })
 }
 async function disk(id: string): Promise<DocumentSnapshot> {
   return page.evaluate(async (docId) => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const result = await window.loom.read(boot.value.preferences.lastBookId!, docId)
+    const result = await window.zestloomer.read(boot.value.preferences.lastBookId!, docId)
     if (!result.ok) throw new Error(result.message)
     return result.value.document
   }, id)
@@ -176,9 +184,13 @@ test('story links navigate both ways and foreshadow rows save independently', as
   const outline = (await docs()).find((doc) => doc.kind === 'outlines')!
   // Create a chapter through the same desktop IPC, avoiding unrelated naming dialog steps.
   await page.evaluate(async () => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const created = await window.loom.create(boot.value.preferences.lastBookId!, 'chapters', '章一')
+    const created = await window.zestloomer.create(
+      boot.value.preferences.lastBookId!,
+      'chapters',
+      '章一'
+    )
     if (!created.ok) throw new Error(created.message)
   })
   await page.getByRole('button', { name: '刷新', exact: true }).click()
@@ -247,9 +259,9 @@ test('chapter numbers automatically bind and the match button fills existing unb
   await page.getByRole('button', { name: /^大纲/ }).click()
   await newDocument('第012章大纲')
   await page.evaluate(async () => {
-    const boot = await window.loom.bootstrap()
+    const boot = await window.zestloomer.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
-    const result = await window.loom.create(
+    const result = await window.zestloomer.create(
       boot.value.preferences.lastBookId!,
       'chapters',
       '第十二章 铜钥匙'
@@ -278,12 +290,12 @@ test('chapter numbers automatically bind and the match button fills existing unb
 
 test('real model searches reads proposes one foreshadow field and rereads after acceptance', async () => {
   test.skip(
-    !process.env.LOOM_STORY_MODEL_CONFIG,
+    !process.env.ZESTLOOMER_STORY_MODEL_CONFIG,
     'Requires an explicitly selected local model configuration'
   )
   test.setTimeout(240000)
   const state = await page.evaluate(async () => {
-    const api = window.loom
+    const api = window.zestloomer
     const boot = await api.bootstrap()
     if (!boot.ok) throw new Error(boot.message)
     const bookId = boot.value.preferences.lastBookId!
@@ -326,7 +338,7 @@ test('real model searches reads proposes one foreshadow field and rereads after 
   })
   const snapshot = async () =>
     page.evaluate(async (bookId) => {
-      const result = await window.loom.agent.snapshot(bookId)
+      const result = await window.zestloomer.agent.snapshot(bookId)
       if (!result.ok) throw new Error(result.message)
       return result.value
     }, state.bookId)
@@ -337,7 +349,7 @@ test('real model searches reads proposes one foreshadow field and rereads after 
     (proposal) => proposal.conversationId === state.conversationId
   )
   await page.evaluate(async ({ bookId, conversationId }) => {
-    const exported = await window.loom.agent.exportLog(bookId, conversationId)
+    const exported = await window.zestloomer.agent.exportLog(bookId, conversationId)
     if (!exported.ok) throw new Error(exported.message)
   }, state)
   const initialLog = JSON.parse(await fs.readFile(join(root, 'export.txt'), 'utf8'))
@@ -354,16 +366,16 @@ test('real model searches reads proposes one foreshadow field and rereads after 
   })
   const final = await page.evaluate(
     async ({ state, proposal }) => {
-      const accepted = await window.loom.agent.action(
+      const accepted = await window.zestloomer.agent.action(
         state.bookId,
         proposal.id,
         'apply',
         proposal.candidateHash
       )
       if (!accepted.ok) throw new Error(accepted.message)
-      const reread = await window.loom.read(state.bookId, state.documentId)
+      const reread = await window.zestloomer.read(state.bookId, state.documentId)
       if (!reread.ok) throw new Error(reread.message)
-      const exported = await window.loom.agent.exportLog(state.bookId, state.conversationId)
+      const exported = await window.zestloomer.agent.exportLog(state.bookId, state.conversationId)
       if (!exported.ok) throw new Error(exported.message)
       return { document: reread.value.document, export: exported.value }
     },
@@ -376,7 +388,7 @@ test('real model searches reads proposes one foreshadow field and rereads after 
     JSON.stringify({ state, final, log }, null, 2)
   )
   expect(log.log.state).toBe('completed')
-  if (process.env.LOOM_STORY_MODEL_PROFILE) expect(log.log.model).toMatch(/gemini/i)
+  if (process.env.ZESTLOOMER_STORY_MODEL_PROFILE) expect(log.log.model).toMatch(/gemini/i)
   expect(log.log.tools.map((tool: { call: { name: string } }) => tool.call.name)).toEqual([
     'read',
     'read',
@@ -668,7 +680,7 @@ test('workspace TXT import previews exact source, cancels without writes and imp
   await page.getByRole('button', { name: '导入', exact: true }).click()
   let dialog = page.getByRole('dialog', { name: '导入文字资料', exact: true })
   await expect(dialog.locator('.source-actions button')).toHaveCount(1)
-  expect(await page.evaluate(() => Object.keys(window.loom.imports))).toEqual(['chooseFile'])
+  expect(await page.evaluate(() => Object.keys(window.zestloomer.imports))).toEqual(['chooseFile'])
   await dialog.getByRole('button', { name: '选择 TXT / Markdown', exact: true }).click()
   await expect(dialog.getByRole('textbox', { name: '导入文档标题', exact: true })).toHaveValue(
     '第1章 雨夜'

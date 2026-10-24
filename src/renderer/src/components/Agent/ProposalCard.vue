@@ -61,6 +61,7 @@ function proposalAction(action: 'apply' | 'reject' | 'undo'): void {
       }}</strong
     ><small>{{ stateLabels[proposal.state] }}</small>
     <p v-if="proposal.reason">{{ proposal.reason }}</p>
+    <p v-if="proposal.paragraphNormalization">已统一候选正文的段落换行，请一并审阅。</p>
     <small>{{ proposal.createdAt }} · {{ proposal.turnId }}</small>
     <p v-if="diff.coarse">文档较大，显示完整前后对照。</p>
     <small v-if="proposal.before">高亮显示变化的词句；↵ 表示变化的换行。</small>

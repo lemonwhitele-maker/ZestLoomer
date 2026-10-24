@@ -15,7 +15,7 @@ const props = defineProps<{
   documents: DocumentMeta[]
 }>()
 const emit = defineEmits<{ open: [id: string]; saved: [id: string]; source: [id: string] }>()
-const api = window.loom
+const api = window.zestloomer
 const error = ref('')
 const matchNotice = ref('')
 const loading = ref(false)

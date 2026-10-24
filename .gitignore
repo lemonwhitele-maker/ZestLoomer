@@ -26,4 +26,5 @@ agent.json
 workspace.json
 tool-api.json
 .loom/
+.zestloomer/
 BookList/

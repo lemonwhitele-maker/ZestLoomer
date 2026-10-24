@@ -23,6 +23,73 @@ const call = (name: string, args: unknown, n = '1'): Completion => ({
   calls: [{ id: n, name, arguments: JSON.stringify(args) }]
 })
 const done = { text: '提案已准备，等待作者审阅。', calls: [] }
+test('selection evidence merges with missing line reads after delivery', async () => {
+  const { store, book } = await fixture()
+  const doc = (await store.create(book.id, 'notes', '范围', { content: '甲乙\n丙丁\n戊己' }))
+    .document
+  const adapter = new BookDocumentAdapter(store, book.id, {}, '', () => [], undefined, true)
+  const story = (await store.readWithBindings(book.id, [doc.id]))[0]
+  adapter.seedSelection(story, 1, 7)
+  assert.equal(adapter.evidence.size, 0)
+  assert.deepEqual(adapter.readingProgress()[0].missing, [
+    { start: 0, end: 1 },
+    { start: 7, end: 8 }
+  ])
+  adapter.acknowledgeDelivery()
+  assert.equal(adapter.deliveredCovers(doc.id, 1, 7), true)
+  await adapter.read({ path: documentPath(doc), startLine: 1, endLine: 1 })
+  await adapter.read({ path: documentPath(doc), startLine: 3, endLine: 3 })
+  assert.equal(adapter.readingProgress()[0].complete, true)
+  assert.equal(adapter.deliveredCovers(doc.id, 0, 8), false)
+  adapter.acknowledgeDelivery()
+  assert.equal(adapter.deliveredCovers(doc.id, 0, 8), true)
+})
+test('chapter create/write and non-chapter edit do not use whole-candidate paragraph normalization', async () => {
+  const { store, book } = await fixture()
+  for (const operation of ['create', 'write', 'edit'] as const) {
+    const d = (
+      await store.create(book.id, operation === 'edit' ? 'notes' : 'chapters', '范围隔离', {
+        content: '甲\n乙\n'
+      })
+    ).document
+    const service = new AgentService(
+      store,
+      () =>
+        new ScriptedRuntime((_messages, step) => {
+          if (step === 0) return call('read', { path: documentPath(d) })
+          if (step !== 1) return done
+          return call(
+            operation,
+            operation === 'create'
+              ? { directory: 'book/chapters/', title: '新正文', content: '新甲\n乙\n' }
+              : operation === 'write'
+                ? { path: documentPath(d), content: '新甲\n乙\n' }
+                : {
+                    path: documentPath(d),
+                    baseVersion: d.version,
+                    edits: [
+                      {
+                        mode: 'replace',
+                        target: { kind: 'lines', startLine: 1, endLine: 1 },
+                        newText: '新甲'
+                      }
+                    ]
+                  },
+            '2'
+          )
+        })
+    )
+    const c = await service.create(book.id, '范围隔离')
+    await service.start(book.id, c.id, '修改', {})
+    await service.idle()
+    const p = (await service.snapshot(book.id)).proposals.find(
+      (item) => item.conversationId === c.id
+    )!
+    assert.ok(p)
+    assert.equal(p.content, '新甲\n乙\n')
+    assert.equal(p.paragraphNormalization, undefined)
+  }
+})
 test('full writes repair paragraph markers and retain the target line separator', async () => {
   const { store, book } = await fixture()
   const d = (await store.create(book.id, 'chapters', '章节', { content: '甲\r\n乙' })).document
@@ -67,13 +134,14 @@ test('create normalizes model paragraphs and templates before hashing, apply and
     assert.ok(p)
     assert.ok(p.content.includes('甲\n\n乙\n\n丙'))
     assert.ok(validateTemplate(kind, p.content))
+    assert.equal(p.content.includes('### 经典发言'), kind === 'characters')
     await service.action(book.id, p.id, 'apply', p.candidateHash)
     assert.equal((await store.read(book.id, p.targetId)).document.content, p.content)
     await service.action(book.id, p.id, 'undo', p.candidateHash)
     assert.ok((await store.read(book.id, p.targetId)).document.trashedAt)
   }
 })
-test('proposal edits preserve surrounding CRLF and normalize only inserted line endings through apply and undo', async () => {
+test('chapter edits normalize the whole candidate before persistence, apply and undo', async () => {
   const { store, book } = await fixture()
   for (const selected of [false, true]) {
     const original = '前文\r\n\r\n待修改\r\n后文\r\n'
@@ -116,10 +184,18 @@ test('proposal edits preserve surrounding CRLF and normalize only inserted line 
       (proposal) => proposal.targetId === d.id
     )!
     assert.ok(p)
-    assert.equal(p.content, '前文\r\n\r\n新段\r\n\r\n续段\r\n末段\r\n后文\r\n')
-    await service.action(book.id, p.id, 'apply', p.candidateHash)
+    assert.equal(p.content, '前文\r\n\r\n新段\r\n\r\n续段\r\n\r\n末段\r\n\r\n后文')
+    assert.equal(p.before?.content, original)
+    assert.equal(p.paragraphNormalization, true)
+    assert.equal((await store.read(book.id, d.id)).document.content, original)
+    const restarted = new AgentService(store, () => new ScriptedRuntime(() => done))
+    const restored = (await restarted.snapshot(book.id)).proposals.find((item) => item.id === p.id)!
+    assert.equal(restored.content, p.content)
+    assert.equal(restored.candidateHash, p.candidateHash)
+    assert.equal(restored.paragraphNormalization, true)
+    await restarted.action(book.id, p.id, 'apply', p.candidateHash)
     assert.equal((await store.read(book.id, d.id)).document.content, p.content)
-    await service.action(book.id, p.id, 'undo', p.candidateHash)
+    await restarted.action(book.id, p.id, 'undo', p.candidateHash)
     assert.equal((await store.read(book.id, d.id)).document.content, original)
   }
 })
@@ -152,7 +228,10 @@ test('sent context and truthful progress survive restart without counting failed
   await service.start(book.id, c.id, '请分析选区', frozen)
   frozen.selection.text = '发送后改变'
   await service.idle()
-  assert.equal(workspace.selection.text, d.content)
+  assert.equal(
+    workspace.selectionContent,
+    `<chapter-context><selection>${d.content}</selection></chapter-context>`
+  )
   const restarted = new AgentService(store, () => new ScriptedRuntime(() => done))
   const restored = (await restarted.snapshot(book.id)).conversations.find(
     (item) => item.id === c.id
@@ -166,6 +245,7 @@ test('sent context and truthful progress survive restart without counting failed
     1
   )
   assert.deepEqual(phases, [
+    'context.history',
     'turn.started',
     'model.started',
     'evidence.delivered',
@@ -199,8 +279,33 @@ test('templates are optional, stored atomically and never force sections or cont
       content: '自由结构，无必要区块'
     })
     assert.equal((await store.read(book.id, d.id)).document.content, saved.content)
+    assert.equal(saved.content, '自由结构，无必要区块')
     assert.equal(initialContent(kind, 'blank'), '')
   }
+})
+
+test('ordinary Agent writes do not add signature speech to existing characters', async () => {
+  const { store, book } = await fixture()
+  const before = (await store.create(book.id, 'characters', '旧人物', { content: '原有自由资料' }))
+    .document
+  const service = new AgentService(
+    store,
+    () =>
+      new ScriptedRuntime((_messages, step) => {
+        if (step === 0) return call('read', { path: documentPath(before) })
+        if (step === 1)
+          return call('write', { path: documentPath(before), content: '修改后的自由资料' }, '2')
+        return done
+      })
+  )
+  const conversation = await service.create(book.id, '修改旧人物')
+  await service.start(book.id, conversation.id, '修改人物资料', {})
+  await service.idle()
+  const proposal = (await service.snapshot(book.id)).proposals[0]
+  assert.equal(proposal.content, '修改后的自由资料')
+  assert.equal((await store.read(book.id, before.id)).document.content, before.content)
+  await service.action(book.id, proposal.id, 'apply', proposal.candidateHash)
+  assert.equal((await store.read(book.id, before.id)).document.content, proposal.content)
 })
 test('read coverage excludes summaries, missing middle pages, stale cursors and trash; batch preserves item errors', async () => {
   const { store, book } = await fixture()
@@ -260,8 +365,7 @@ test('note-to-setting creation is a proposal, duplicates do not create two, appl
             {
               directory: 'book/settings/',
               title: '水门',
-              content: '### 定义\n\n城市水门\n\n### 规则与边界\n\n每天开启两次。',
-              sources: [documentPath(note)]
+              content: '### 定义\n\n城市水门\n\n### 规则与边界\n\n每天开启两次。'
             },
             String(step)
           )
@@ -275,6 +379,9 @@ test('note-to-setting creation is a proposal, duplicates do not create two, appl
   assert.equal(snap.proposals.length, 1)
   assert.equal((await store.agentDocuments(book.id)).filter((d) => d.kind === 'settings').length, 0)
   const p = snap.proposals[0]
+  assert.deepEqual(p.sources, [
+    { id: note.id, kind: note.kind, title: note.title, version: note.version }
+  ])
   await service.action(book.id, p.id, 'apply', p.candidateHash)
   const d = await store.agentRead(book.id, p.targetId)
   assert.equal(d.content, p.content)

@@ -5,7 +5,7 @@ import { parseTextImport, type ImportAPI, type ImportDraft } from '../../../shar
 
 const props = defineProps<{ busy: boolean; hasBook: boolean; error?: string }>()
 const emit = defineEmits<{ close: []; submit: [draft: ImportDraft, newBookTitle?: string] }>()
-const api = (window.loom as typeof window.loom & { imports: ImportAPI }).imports
+const api = (window.zestloomer as typeof window.zestloomer & { imports: ImportAPI }).imports
 const encoding = ref<'utf8' | 'gb18030'>('utf8')
 const loading = ref(false)
 const dialog = ref<HTMLElement>()

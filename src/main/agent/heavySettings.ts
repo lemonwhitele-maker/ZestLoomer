@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { join, isAbsolute } from 'node:path'
 import { atomicWrite } from '../documents'
 import { defaultHeavySettings, type HeavyAgentSettings } from '../../shared/heavyAgent'
+import { libraryConfigDirectory } from '../dataPaths'
 
 export function validateHeavySettings(value: unknown): HeavyAgentSettings {
   const v = value as HeavyAgentSettings
@@ -27,12 +28,15 @@ export function validateHeavySettings(value: unknown): HeavyAgentSettings {
 export class HeavySettingsStore {
   private queue = Promise.resolve()
   private migration?: Promise<void>
+  private configFolder: string
   constructor(
     private root: string,
     private legacyPointer?: string
-  ) {}
+  ) {
+    this.configFolder = libraryConfigDirectory(root)
+  }
   private async migrate(): Promise<void> {
-    const folder = join(this.root, '.loom')
+    const folder = this.configFolder
     const path = join(folder, 'agent-settings.json')
     const marker = join(folder, 'heavy-settings-migration.json')
     await fs.mkdir(folder, { recursive: true })
@@ -56,7 +60,7 @@ export class HeavySettingsStore {
         if (pointer) {
           if (typeof pointer.root !== 'string' || !isAbsolute(pointer.root))
             throw new Error('旧超重agent 配置位置无效，请修复后重试')
-          const source = join(pointer.root, '.loom', 'agent-settings.json')
+          const source = join(libraryConfigDirectory(pointer.root), 'agent-settings.json')
           validateHeavySettings(JSON.parse(await fs.readFile(source, 'utf8')))
           try {
             await fs.copyFile(source, path, constants.COPYFILE_EXCL)
@@ -85,13 +89,13 @@ export class HeavySettingsStore {
       return {
         root: this.root,
         settings: validateHeavySettings(
-          JSON.parse(await fs.readFile(join(this.root, '.loom', 'agent-settings.json'), 'utf8'))
+          JSON.parse(await fs.readFile(join(this.configFolder, 'agent-settings.json'), 'utf8'))
         )
       }
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
       const marker = JSON.parse(
-        await fs.readFile(join(this.root, '.loom', 'heavy-settings-migration.json'), 'utf8')
+        await fs.readFile(join(this.configFolder, 'heavy-settings-migration.json'), 'utf8')
       )
       if (marker.hasSettings)
         throw new Error('BookList 中已保存的超重agent 配置缺失，请恢复文件后重试')
@@ -106,11 +110,11 @@ export class HeavySettingsStore {
         const current = await this.read()
         const root = this.root
         await fs.access(root)
-        const path = join(root, '.loom', 'agent-settings.json')
+        const path = join(this.configFolder, 'agent-settings.json')
         const existing = current.settings
         if (settings.revision !== existing.revision)
           throw new Error('超重agent 配置已变化，请重新加载后保存')
-        await fs.mkdir(join(root, '.loom'), { recursive: true })
+        await fs.mkdir(this.configFolder, { recursive: true })
         const lock = await fs.open(`${path}.lock`, 'wx').catch(() => {
           throw new Error('超重agent 配置正在保存，请稍后重试')
         })
@@ -129,7 +133,7 @@ export class HeavySettingsStore {
           if (JSON.stringify(verified) !== JSON.stringify(next))
             throw new Error('超重agent 配置读回校验失败')
           await atomicWrite(
-            join(root, '.loom', 'heavy-settings-migration.json'),
+            join(this.configFolder, 'heavy-settings-migration.json'),
             JSON.stringify({ schemaVersion: 1, hasSettings: true })
           )
           return { root, settings: verified }

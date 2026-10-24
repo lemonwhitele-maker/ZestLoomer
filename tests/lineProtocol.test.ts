@@ -12,6 +12,7 @@ import {
 } from '../src/main/agent/documents'
 import { applyLineEdits } from '../src/main/agent/lineEdits'
 import { AgentService } from '../src/main/agent/service'
+import { proposalCandidateHash } from '../src/main/agent/proposalHash'
 import { ScriptedRuntime } from '../src/main/agent/runtime'
 import type { AgentWorkspace } from '../src/shared/agent'
 
@@ -49,6 +50,52 @@ const insert = (kind: string, newText: string, line?: number) => ({
 })
 const body = (page: { lines: NumberedLine[] }) =>
   page.lines.map((line) => line.text + (line.eol ?? '')).join('')
+
+test('chapter proposal finalization follows original coordinates for batches, deletion and all insert anchors', async () => {
+  const cases: [string, unknown[], string][] = [
+    [
+      '甲\n乙\n丙\n',
+      [replace(1, 1, '新甲\n新增'), replace(3, 3, '新丙')],
+      '新甲\n\n新增\n\n乙\n\n新丙'
+    ],
+    ['甲\n乙\n丙', [replace(2, 2, '')], '甲\n\n丙'],
+    ['甲\n乙', [replace(1, 2, ' \t\n')], ''],
+    ['甲\n乙', [insert('before_line', '新增', 2)], '甲\n\n新增\n\n乙'],
+    ['甲\n乙', [insert('after_line', '新增', 1)], '甲\n\n新增\n\n乙'],
+    ['甲\n乙', [insert('document_start', '新增')], '新增\n\n甲\n\n乙'],
+    ['甲\n乙', [insert('document_end', '新增')], '甲\n\n乙\n\n新增'],
+    ['', [insert('document_end', '\n甲\n乙\n')], '甲\n\n乙']
+  ]
+  for (const [source, edits, expected] of cases) {
+    const f = await fixture(source)
+    const service = new AgentService(
+      f.store,
+      () =>
+        new ScriptedRuntime((_messages, step) => ({
+          text: '',
+          calls:
+            step > 1
+              ? []
+              : [
+                  {
+                    id: String(step),
+                    name: step === 0 ? 'read' : 'edit',
+                    arguments: JSON.stringify(step === 0 ? { path: f.path } : f.args(edits))
+                  }
+                ]
+        }))
+    )
+    const c = await service.create(f.book.id, '候选规范化')
+    await service.start(f.book.id, c.id, '修改正文', {})
+    await service.idle()
+    const p = (await service.snapshot(f.book.id)).proposals[0]
+    assert.ok(p)
+    assert.equal(p.content, expected)
+    assert.equal(p.before?.content, source)
+    await service.action(f.book.id, p.id, 'reject', p.candidateHash)
+    assert.equal((await f.store.read(f.book.id, f.doc.id)).document.content, source)
+  }
+})
 
 test('logical numbering preserves blank lines, mixed separators, terminal separators and Unicode', () => {
   for (const [content, expected] of [
@@ -453,7 +500,7 @@ test('service line proposals stay pending, persist, apply and undo; legacy persi
   const p = (await service.snapshot(f.book.id)).proposals[0]
   assert.ok(p)
   assert.equal(p.state, 'pending')
-  assert.equal(p.content, '前文\n重复\n新的结尾')
+  assert.equal(p.content, '前文\n\n重复\n\n新的结尾')
   assert.equal((await f.store.agentRead(f.book.id, f.doc.id)).content, f.doc.content)
   assert.ok(
     (await service.snapshot(f.book.id)).conversations[0]
@@ -469,4 +516,21 @@ test('service line proposals stay pending, persist, apply and undo; legacy persi
   assert.equal((await f.store.agentRead(f.book.id, f.doc.id)).content, p.content)
   await restarted.action(f.book.id, p.id, 'undo', p.candidateHash)
   assert.equal((await f.store.agentRead(f.book.id, f.doc.id)).content, f.doc.content)
+  // Simulate a pre-normalization proposal on the current saved version.
+  const legacy = {
+    ...p,
+    before: await f.store.agentRead(f.book.id, f.doc.id),
+    content: '旧候选\n单换行\n',
+    state: 'pending' as const,
+    sources: []
+  }
+  delete legacy.paragraphNormalization
+  legacy.candidateHash = proposalCandidateHash(legacy)
+  await f.store.writeAgentRecord(f.book.id, 'proposals', legacy.id, legacy)
+  const legacyService = new AgentService(
+    f.store,
+    () => new ScriptedRuntime(() => ({ text: '', calls: [] }))
+  )
+  await legacyService.action(f.book.id, legacy.id, 'apply', legacy.candidateHash)
+  assert.equal((await f.store.agentRead(f.book.id, f.doc.id)).content, legacy.content)
 })

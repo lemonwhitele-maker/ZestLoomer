@@ -24,7 +24,7 @@ import {
 import { DocumentSession, type SessionChange } from './session'
 import { counters } from '../../shared/perf'
 import { SessionWordCounts } from './wordCounts'
-import loomLogo from '../../shared/assets/loom-logo.png'
+import zestloomerLogo from '../../shared/assets/zestloomer-logo.png'
 import { knowledgeEntries } from './editorKnowledge'
 import StoryTools from './components/StoryTools.vue'
 import TextEditor from './components/TextEditor.vue'
@@ -42,7 +42,7 @@ import type { AgentConfig, AgentSnapshot, AgentWorkspace } from '../../shared/ag
 import { defaultToolApiConfig, type ToolApiConfig } from '../../shared/toolApi'
 
 const storyTools = ref<InstanceType<typeof StoryTools>>()
-const api = window.loom
+const api = window.zestloomer
 const books = ref<Book[]>([])
 const currentBook = ref<Book | null>(null)
 const kind = ref<DocumentKind>('chapters')
@@ -1484,7 +1484,7 @@ onMounted(async () => {
     const boot = unwrap(await api.bootstrap())
     counters.enabled = boot.performanceEnabled === true
     if (counters.enabled)
-      Object.defineProperty(window, '__loomPerfSnapshot', {
+      Object.defineProperty(window, '__zestloomerPerfSnapshot', {
         configurable: true,
         value: () => counters.snapshot()
       })
@@ -1521,8 +1521,14 @@ onBeforeUnmount(() => {
   >
     <nav v-show="!preferences.focusMode" class="sidebar" aria-label="创作分区">
       <div class="brand">
-        <img class="brand-logo" :src="loomLogo" alt="Loom Logo" width="44" height="44" />
-        <div class="brand-name">Loom Preview <span>织机</span></div>
+        <img
+          class="brand-logo"
+          :src="zestloomerLogo"
+          alt="ZestLoomer Logo"
+          width="44"
+          height="44"
+        />
+        <div class="brand-name">ZestLoomer</div>
       </div>
       <div class="book-controls">
         <select
@@ -1619,12 +1625,16 @@ onBeforeUnmount(() => {
         <label
           ><input
             type="checkbox"
-            :checked="visibleDocuments.every((doc) => selectedIds.includes(doc.id))"
+            :checked="
+              visibleDocuments
+                .filter((doc) => !doc.readonlyExample)
+                .every((doc) => selectedIds.includes(doc.id))
+            "
             :disabled="busy"
             aria-label="选择当前列表全部文档"
             @change="
               selectedIds = ($event.target as HTMLInputElement).checked
-                ? visibleDocuments.map((doc) => doc.id)
+                ? visibleDocuments.filter((doc) => !doc.readonlyExample).map((doc) => doc.id)
                 : []
             "
           />多选</label
@@ -1650,7 +1660,7 @@ onBeforeUnmount(() => {
           @dragend="dragId = ''"
         >
           <input
-            v-if="!inTrash"
+            v-if="!inTrash && !doc.readonlyExample"
             class="entry-select"
             type="checkbox"
             :checked="selectedIds.includes(doc.id)"
@@ -1774,7 +1784,9 @@ onBeforeUnmount(() => {
           <input
             :value="current.title"
             aria-label="文档标题"
-            :disabled="Boolean(current.document.trashedAt) || busy"
+            :disabled="
+              Boolean(current.document.trashedAt || current.document.readonlyExample) || busy
+            "
             maxlength="200"
             @input="editTitle"
           />
@@ -1782,9 +1794,18 @@ onBeforeUnmount(() => {
             <button v-if="!current.document.trashedAt" :disabled="busy" @click="copyCurrent">
               复制
             </button>
-            <button :disabled="busy" @click="showHistory">历史版本</button>
+            <button
+              :disabled="busy || Boolean(current.document.readonlyExample)"
+              @click="showHistory"
+            >
+              历史版本
+            </button>
             <button :disabled="busy" @click="exportCurrent">导出</button
-            ><button v-if="!current.document.trashedAt" :disabled="busy" @click="modal = 'trash'">
+            ><button
+              v-if="!current.document.trashedAt"
+              :disabled="busy || Boolean(current.document.readonlyExample)"
+              @click="modal = 'trash'"
+            >
               移入回收站</button
             ><button v-else class="primary" :disabled="busy" @click="restore">恢复文档</button>
           </div>
@@ -1831,21 +1852,32 @@ onBeforeUnmount(() => {
         </div>
         <div class="editor-toolbar">
           <div class="row">
-            <button :disabled="busy || Boolean(current.document.trashedAt)" @click="editor?.undo()">
+            <button
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
+              @click="editor?.undo()"
+            >
               撤销</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="editor?.redo()"
             >
               重做</button
             ><span class="separator" /><button @click="editor?.search()">查找</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="editor?.replace()"
             >
               替换</button
             ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
+              :disabled="
+                busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+              "
               @click="referenceOpen = true"
             >
               插入引用
@@ -1872,6 +1904,9 @@ onBeforeUnmount(() => {
           ><button v-if="current.status === 'conflict'" @click="compareDisk">比较磁盘版本</button
           ><button v-else @click="flushCurrent">重试保存</button>
         </div>
+        <div v-if="current.document.readonlyExample" class="notice">
+          只读填写示例，不属于本书事实。可复制为普通资料后编辑。
+        </div>
         <div v-if="current.document.trashedAt" class="trash-banner">
           此文档已移入回收站，引用仍有效。恢复后可继续编辑。
         </div>
@@ -1880,7 +1915,7 @@ onBeforeUnmount(() => {
           :session="current"
           :preferences="preferences"
           :tick="tick"
-          :locked="busy"
+          :locked="busy || Boolean(current.document.readonlyExample)"
           :knowledge-entries="highlightEntries"
           :highlight-enabled="highlightEnabled"
           @save="flushCurrent"
@@ -1898,7 +1933,7 @@ onBeforeUnmount(() => {
         </footer>
       </template>
       <section v-else-if="!foreshadowTable || !currentBook" class="empty">
-        <span class="eyebrow">LOOM / {{ labels[kind] }}</span>
+        <span class="eyebrow">ZestLoomer / {{ labels[kind] }}</span>
         <h1>
           {{
             currentBook ? (inTrash ? '每一个想法都可以找回' : '留一页给新的想法') : '从一部作品开始'

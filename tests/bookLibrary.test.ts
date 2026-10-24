@@ -32,7 +32,7 @@ test('moving a library recovers books by ID and persists relative paths', async 
   await fs.mkdir(root)
   const book = await new DocumentStore().createBook(root, '迁移作品')
   const saved = storedBook(root, book)
-  assert.equal(saved.root.startsWith('Loom-'), true)
+  assert.equal(saved.root.startsWith('ZestLoomer-'), true)
   await fs.rename(root, moved)
   const discovered = await libraryBooks(moved)
   const recovered = locateBooks(moved, [book], discovered)

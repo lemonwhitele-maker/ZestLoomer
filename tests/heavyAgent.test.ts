@@ -34,7 +34,7 @@ test('BookList owns settings, imports legacy once, preserves destination and mov
   const moved = root + '-moved'
   await fs.rename(root, moved)
   assert.deepEqual((await new HeavySettingsStore(moved).read()).settings, changed.settings)
-  await fs.unlink(join(moved, '.loom', 'agent-settings.json'))
+  await fs.unlink(join(moved, '.zestloomer', 'agent-settings.json'))
   await assert.rejects(new HeavySettingsStore(moved, pointer).read(), /配置缺失/)
   const independent = new HeavySettingsStore(await folder())
   assert.equal((await independent.read()).settings.appendPrompt, false)
@@ -53,7 +53,7 @@ test('global settings survive restart, reject stale concurrent saves and preserv
   assert.deepEqual(await new HeavySettingsStore(root, pointer).read(), saved)
   const writes = await Promise.allSettled([store.save(saved.settings), store.save(saved.settings)])
   assert.equal(writes.filter((r) => r.status === 'fulfilled').length, 1)
-  const path = join(root, '.loom', 'agent-settings.json')
+  const path = join(root, '.zestloomer', 'agent-settings.json')
   await fs.writeFile(path, '{broken')
   await assert.rejects(store.read())
   await assert.rejects(store.save(saved.settings))
@@ -140,6 +140,13 @@ test('conversation settings freeze, source data refreshes, ordered full outlines
   assert.match(messages[1].content!, /完整大纲1/)
   assert.match(messages[4].content!, /完整大纲4/)
   assert.equal(messages.at(-1)?.content, '本次要求')
+  const sentWorkspace = JSON.parse(messages.at(-2)!.content!.split('：').slice(1).join('：'))
+  assert.deepEqual(sentWorkspace.selection, { from: selection.from, to: selection.to })
+  assert.equal(
+    sentWorkspace.currentContext[0].content,
+    `<chapter-context><selection>${selection.text}</selection></chapter-context>`
+  )
+  assert.equal(sentWorkspace.selectionContent, undefined)
   assert.ok(!JSON.stringify(messages).includes('updatedAt'))
   assert.throws(
     () =>

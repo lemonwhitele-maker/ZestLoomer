@@ -10,7 +10,7 @@ const sections = [
   '51mazi_chatbox: https://github.com/lemonwhitele-maker/51mazi_chatbox — Agent collaboration and template design reference; see docs/provenance.md.',
   'Generated from the locked installed runtime dependencies and bundled Vue renderer dependencies.',
   'The original application MIT notice is preserved in LICENSE.',
-  'Electron 39.2.7 includes Chromium, Node.js and other components. Full upstream notices are shipped beside LoomPreview.exe as LICENSE.electron.txt and LICENSES.chromium.html.',
+  'Electron 39.2.7 includes Chromium, Node.js and other components. Full upstream notices are shipped beside Loom.exe as LICENSE.electron.txt and LICENSES.chromium.html.',
   'The Loom logo is an existing application asset.'
 ]
 for (const [path, entry] of Object.entries(lock.packages)) {

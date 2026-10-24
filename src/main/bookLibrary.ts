@@ -3,10 +3,11 @@ import { constants } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { atomicWrite } from './documents'
 import type { Book } from '../shared/documents'
+import { libraryConfigDirectory } from './dataPaths'
 
 /** Configuration travels with the library; Chromium caches remain in userData. */
 export async function prepareLibrary(root: string, legacy: string): Promise<string> {
-  const config = join(root, '.loom')
+  const config = libraryConfigDirectory(root)
   await fs.mkdir(config, { recursive: true })
   const marker = join(config, 'migration.json')
   try {

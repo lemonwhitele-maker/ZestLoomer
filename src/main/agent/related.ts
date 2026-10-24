@@ -20,7 +20,7 @@ export function documentAliases(content: string): string[] {
 }
 
 export function relatedContext(documents: DocumentSnapshot[], targetId: string, maxNodes = 40) {
-  const docs = documents.filter((d) => !d.trashedAt)
+  const docs = documents.filter((d) => !d.trashedAt && !d.readonlyExample)
   const target = docs.find((d) => d.id === targetId)
   if (!target) return { related: [], truncated: false, maxDepth: 2 }
   const names = new Map(docs.map((d) => [d.id, documentAliases(d.content)]))

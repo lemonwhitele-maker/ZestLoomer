@@ -26,6 +26,7 @@ export interface Book {
   format: 1
 }
 export interface DocumentMeta {
+  readonlyExample?: boolean
   id: string
   kind: DocumentKind
   title: string
@@ -80,7 +81,7 @@ export type Result<T> =
       message: string
       binding?: import('./storyLinks').ChapterOutlinePair
     }
-export interface LoomAPI {
+export interface ZestLoomerAPI {
   story: import('./storyLinks').StoryAPI
   tools: ToolAPI
   agent: AgentAPI

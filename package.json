@@ -1,9 +1,8 @@
 {
-  "name": "loom-preview",
-  "version": "0.1.0-preview.20261019",
-  "productName": "Loom Preview",
+  "name": "zestloomer",
+  "version": "0.1.0-preview.20261024",
   "private": true,
-  "description": "Loom — local novel writing workspace",
+  "description": "ZestLoomer — local novel writing workspace",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {

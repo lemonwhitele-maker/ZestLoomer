@@ -32,7 +32,7 @@ const emit = defineEmits<{
   appearance: [value: Partial<WorkspacePreferences>]
   bookAction: [action: 'exportBook' | 'backup' | 'import']
 }>()
-const api = window.loom
+const api = window.zestloomer
 const section = ref<Section>(props.initialSection)
 const aiMode = ref<'agent' | 'tools'>('agent')
 const tabs: { id: Section; title: string; description: string }[] = [
@@ -680,8 +680,9 @@ onBeforeUnmount(() => {
               窗口限制。资料超出模型容量时停止发送，不截断大纲或追加指令。
             </p>
             <p class="field-help">
-              超重agent 设置与 API 配置统一保存在 BookList/.loom
-              下；对话保存在各作品目录内。备份整个 BookList 可一并保留，单作品备份不包含书库设置。
+              超重agent 设置与 API 配置统一保存在书库配置目录（新书库为 .zestloomer，旧书库兼容
+              .loom） 下；对话保存在各作品目录内。备份整个 BookList
+              可一并保留，单作品备份不包含书库设置。
             </p>
             <details>
               <summary>内置 system prompt（只读）</summary>
