@@ -13,11 +13,14 @@ import { executionBudget } from '../src/main/agent/budgets'
 interface ReadResult {
   resultType?: string
   text?: string
+  lines?: { text: string; eol?: string }[]
   nextCursor?: string | null
   relatedDocuments?: ReadRelatedDocuments
   items?: ReadResult[]
   error?: string
 }
+const body = (result: ReadResult) =>
+  result.lines?.map((line) => line.text + (line.eol ?? '')).join('')
 
 async function fixture() {
   await fs.mkdir(resolve('.test-artifacts'), { recursive: true })
@@ -54,7 +57,7 @@ test('chapter reads identify literal names and explicit aliases per document wit
   const adapter = new BookDocumentAdapter(store, book.id, {}, '', () => [], undefined, true)
   const result = (await adapter.read({ path: documentPath(chapter) })) as ReadResult
   const context = related(result)
-  assert.equal(result.text, manuscript)
+  assert.equal(body(result), manuscript)
   assert.equal(context.total, 3)
   assert.equal(context.truncated, false)
   assert.match(context.notice, /不代表已读取|不算.*读取|定位/)
@@ -81,7 +84,7 @@ test('chapter reads identify literal names and explicit aliases per document wit
   })
   const partialAdapter = new BookDocumentAdapter(store, book.id, {}, '', () => [])
   const partial = (await partialAdapter.read({ path: documentPath(chapter) })) as ReadResult
-  assert.equal(partial.text, manuscript)
+  assert.equal(body(partial), manuscript)
   assert.equal(related(partial).total, 2)
   assert.equal(related(partial).truncated, true)
   assert.match(related(partial).notice, /部分.*无法索引/)
@@ -104,14 +107,14 @@ test('pagination and batch reads match only returned chapter fragments; other re
   ])
   const first = (await adapter.read({ path: documentPath(chapter), maxChars: 500 })) as ReadResult
   const second = (await adapter.read({ cursor: first.nextCursor, maxChars: 500 })) as ReadResult
-  assert.equal(first.text!.length, 500)
-  assert.equal(second.text, '海陆离')
+  assert.equal(body(first)! + body(second)!, chapter.content)
   for (const page of [first, second]) {
+    const expected = ['陆离', '山海'].filter((name) => body(page)!.includes(name))
     assert.deepEqual(
       related(page).items.map((item) => item.title),
-      ['陆离']
+      expected
     )
-    assert.equal(related(page).total, 1)
+    assert.equal(related(page).total, expected.length)
   }
   const batch = (await adapter.read({
     paths: [documentPath(left), documentPath(right), documentPath(left), 'C:/outside'],
@@ -158,7 +161,7 @@ test('pagination and batch reads match only returned chapter fragments; other re
     () => []
   )
   const recycled = (await historical.read({ path: documentPath(left) })) as ReadResult
-  assert.equal(recycled.text, left.content)
+  assert.equal(body(recycled), left.content)
   assert.equal(recycled.relatedDocuments, undefined)
   assert.equal(historical.reads.size, 0)
 })
@@ -194,7 +197,16 @@ test('large name indexes preserve manuscript text and exact match totals within 
     maxChars: 16000
   })) as ReadResult
   const context = related(result)
-  assert.equal(result.text, manuscript)
+  assert.ok(manuscript.startsWith(body(result)!))
+  assert.ok(body(result)!.length > 0)
+  let text = body(result)!,
+    cursor = result.nextCursor
+  while (cursor) {
+    const page = (await adapter.read({ cursor, maxChars: 16000 })) as ReadResult
+    text += body(page)
+    cursor = page.nextCursor
+  }
+  assert.equal(text, manuscript)
   assert.equal(context.total, count)
   assert.equal(context.truncated, true)
   assert.ok(context.items.length > 0 && context.items.length < count)
@@ -256,7 +268,7 @@ test('model requests receive chapter name context in tool results, duplicate-rea
   await service.start(book.id, conversation.id, '继续分析', workspace)
   await service.idle()
   assert.ok(cached)
-  assert.equal(cached.text, chapter.content)
+  assert.equal(body(cached), chapter.content)
   for (const result of [...received, cached]) {
     const context = related(result)
     assert.equal(context.total, 2)
@@ -304,7 +316,9 @@ test('a hanging name index on duplicate read stops at the tool timeout without a
     () =>
       new ScriptedRuntime((_messages, step) => {
         requests++
-        if (step === 1) executionBudget.toolTimeoutMs = 50
+        // Allow the disk/version checks to finish under concurrent Windows test I/O;
+        // the mocked index itself never resolves and must still time out.
+        if (step === 1) executionBudget.toolTimeoutMs = 500
         return {
           text: '',
           calls: [

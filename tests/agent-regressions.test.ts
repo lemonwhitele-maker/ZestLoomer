@@ -19,31 +19,30 @@ async function fixture() {
   return { store, book }
 }
 
-test('empty sources cannot bypass host source version checks', async () => {
+test('partial reads automatically persist sources and enforce source version checks', async () => {
   const { store, book } = await fixture()
-  const note = (await store.create(book.id, 'notes', '水门', { content: '每天开启两次' })).document
+  const note = (
+    await store.create(book.id, 'notes', '水门', { content: '每天开启两次\n'.repeat(500) })
+  ).document
   const runtime = new ScriptedRuntime((_m, step) =>
     step === 0
-      ? call('read', { path: documentPath(note) })
+      ? call('read', { path: documentPath(note), maxChars: 500 })
       : step === 1
         ? call('create', {
             directory: 'book/settings/',
             title: '水门',
-            content: note.content,
-            sources: []
+            content: '每天开启两次'
           })
         : done
   )
   const service = new AgentService(store, () => runtime)
   const c = await service.create(book.id, '整理')
-  await service.start(book.id, c.id, '依据这份速记整理成设定', {
-    documentId: note.id,
-    savedVersion: note.version
-  })
+  await service.start(book.id, c.id, '参考已读片段，新建水门设定', {})
   await service.idle()
   const p = (await service.snapshot(book.id)).proposals[0]
   assert.ok(p)
   assert.equal(p.sources.length, 1)
+  assert.equal(p.sources[0].version, note.version)
   await store.save({
     bookId: book.id,
     id: note.id,

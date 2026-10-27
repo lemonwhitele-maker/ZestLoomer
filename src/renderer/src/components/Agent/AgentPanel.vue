@@ -55,12 +55,13 @@ const effectiveProfile = computed(() =>
     ? props.profiles.find((p) => p.id === current.value?.profileId)
     : defaultProfile.value
 )
-const selectionTooLong = computed(
-  () => includeDocument.value && includeSelection.value && props.selectionText.length > 8000
-)
+let lastScrollTop = 0
 function trackScroll(): void {
   const el = messagesElement.value
-  if (el) followLatest.value = el.scrollHeight - el.scrollTop - el.clientHeight < 64
+  if (!el) return
+  if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) followLatest.value = true
+  else if (el.scrollTop < lastScrollTop) followLatest.value = false
+  lastScrollTop = el.scrollTop
 }
 let scrollFrame: number | undefined
 function scheduleLatest(): void {
@@ -118,12 +119,19 @@ watch(current, (c) => {
 watch(
   // Snapshot refreshes (including proposal reviews) do not add messages.
   // Watch the values separately so a new snapshot cannot scroll the review away.
-  [() => props.liveText, () => current.value?.messages.length],
+  [() => props.liveText, () => props.toolText, () => current.value?.messages.length],
   async () => {
     await nextTick()
     if (messagesElement.value?.offsetParent !== null && followLatest.value) scheduleLatest()
   }
 )
+watch(selected, async () => {
+  lastScrollTop = 0
+  visibleCount.value = 40
+  followLatest.value = true
+  await nextTick()
+  scheduleLatest()
+})
 function send(): void {
   if (
     current.value &&
@@ -132,7 +140,6 @@ function send(): void {
     !current.value.archived &&
     !props.busy &&
     !composing.value &&
-    !selectionTooLong.value &&
     effectiveProfile.value
   )
     emit('send', current.value.id, input.value.trim(), {
@@ -221,7 +228,7 @@ defineExpose({
               }}</strong>
               <ul v-if="current.memory[group].length">
                 <li v-for="item in current.memory[group]" :key="item.messageId">
-                  {{ item.role === 'user' ? '你' : 'Loom' }}：{{ item.text }}
+                  {{ item.role === 'user' ? '你' : 'ZestLoomer' }}：{{ item.text }}
                 </li>
               </ul>
               <p v-else>尚无记录</p>
@@ -283,7 +290,7 @@ defineExpose({
           :key="m.id"
           :class="['agent-message', m.role]"
         >
-          <small>{{ m.role === 'user' ? '你' : 'Loom' }}</small>
+          <small>{{ m.role === 'user' ? '你' : 'ZestLoomer' }}</small>
           <div class="message-text">{{ m.text }}</div>
           <details v-if="m.context" class="sent-context">
             <summary>发送时的上下文 · {{ m.context.document?.title || '未附带当前文档' }}</summary>
@@ -303,18 +310,14 @@ defineExpose({
               文档：{{ m.context.document.title }} · 保存版本
               {{ m.context.document.version.slice(0, 12) }}
             </p>
+            <details v-if="m.context.workspace.heavySnapshot">
+              <summary>超重agent 本轮资料与配置快照</summary>
+              <pre>{{ JSON.stringify(m.context.workspace.heavySnapshot, null, 2) }}</pre>
+            </details>
             <pre v-if="m.context.workspace.selection">{{ m.context.workspace.selection.text }}</pre>
             <p v-else>未附带选区</p>
             <p>文档位置与选区在发送时固定；历史讨论按容量整理，Agent 可按任务读取书内资料。</p>
           </details>
-          <button @click="copyMessage(m.text)">复制</button
-          ><button
-            v-if="m.role === 'user'"
-            :disabled="running || busy || current?.archived"
-            @click="input = m.text"
-          >
-            再次编辑
-          </button>
           <div v-if="m.sources.length" class="agent-sources">
             <button
               v-for="source in m.sources"
@@ -323,6 +326,16 @@ defineExpose({
               @click="emit('reference', source.id)"
             >
               {{ source.title }}
+            </button>
+          </div>
+          <div class="message-actions" role="group" aria-label="消息操作">
+            <button @click="copyMessage(m.text)">复制</button
+            ><button
+              v-if="m.role === 'user'"
+              :disabled="running || busy || current?.archived"
+              @click="input = m.text"
+            >
+              再次编辑
             </button>
           </div>
         </article>
@@ -396,9 +409,7 @@ defineExpose({
             : '尚未配置，请打开 AI 设置'
         }}
       </p>
-      <p v-if="selectionTooLong" class="error-text">
-        选区超过 8000 字符，请缩小选区或取消附带选区。
-      </p>
+
       <div v-if="current && !input" class="starters">
         <button
           type="button"
@@ -426,7 +437,7 @@ defineExpose({
         ref="composer"
         v-model="input"
         aria-label="给 Agent 的消息"
-        placeholder="讨论情节，或请 Loom 查阅并修改资料…"
+        placeholder="讨论情节，或请 ZestLoomer 查阅并修改资料…"
         maxlength="16000"
         :disabled="!current || current.archived || busy"
         @compositionstart="composing = true"
@@ -443,13 +454,7 @@ defineExpose({
           v-else
           class="primary"
           :disabled="
-            !current ||
-            current.archived ||
-            !input.trim() ||
-            busy ||
-            composing ||
-            selectionTooLong ||
-            !effectiveProfile
+            !current || current.archived || !input.trim() || busy || composing || !effectiveProfile
           "
         >
           发送
@@ -610,6 +615,17 @@ defineExpose({
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.8;
+}
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.message-actions button {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 4px 7px;
 }
 .agent-sources {
   display: flex;

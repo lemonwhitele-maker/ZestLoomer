@@ -5,5 +5,11 @@ export default defineConfig({
   preload: {
     build: { rollupOptions: { output: { format: 'cjs', entryFileNames: 'index.cjs' } } }
   },
-  renderer: { plugins: [vue()] }
+  renderer: {
+    plugins: [vue()],
+    build: {
+      assetsInlineLimit: 0,
+      minify: process.env.ZESTLOOMER_UNMINIFIED === '1' ? false : 'esbuild'
+    }
+  }
 })

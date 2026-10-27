@@ -1,7 +1,7 @@
 import {
   unwrap,
   type DocumentSnapshot,
-  type LoomAPI,
+  type ZestLoomerAPI,
   type OpenDocument,
   type Draft
 } from '../../shared/documents'
@@ -21,6 +21,7 @@ export class DocumentSession {
   status: SaveStatus = 'saved'
   error = ''
   revision = 0
+  private disposed = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private pending: Promise<boolean> | null = null
   private draftBaseVersion: string
@@ -36,7 +37,7 @@ export class DocumentSession {
   constructor(
     readonly bookId: string,
     opened: OpenDocument,
-    private api: Pick<LoomAPI, 'save' | 'draft'>,
+    private api: Pick<ZestLoomerAPI, 'save' | 'draft'>,
     private changed: (change?: SessionChange) => void = () => {},
     private delay = 650
   ) {
@@ -71,7 +72,8 @@ export class DocumentSession {
   }
 
   edit(content: string, title = this.title): void {
-    if (this.document.trashedAt) return
+    if (this.disposed) return
+    if (this.document.trashedAt || this.document.readonlyExample) return
     this.content = content
     this.title = title
     this.revision++
@@ -168,6 +170,7 @@ export class DocumentSession {
   }
 
   async flush(): Promise<boolean> {
+    if (this.disposed) return true
     clearTimeout(this.timer)
     if (this.pending) {
       return this.pending
@@ -274,6 +277,7 @@ export class DocumentSession {
 
   /** Explicit conflict choice; never silently adopts an external version. */
   useDisk(snapshot: DocumentSnapshot): void {
+    if (this.disposed) return
     clearTimeout(this.timer)
     this.document = snapshot
     this.content = snapshot.content
@@ -287,6 +291,7 @@ export class DocumentSession {
   }
 
   rebase(snapshot: DocumentSnapshot): void {
+    if (this.disposed) return
     this.document = snapshot
     this.status = this.dirty ? 'dirty' : 'saved'
     this.error = ''
@@ -297,5 +302,15 @@ export class DocumentSession {
 
   stop(): void {
     clearTimeout(this.timer)
+  }
+
+  /** Retire only after the save and recovery-draft channels have both settled. */
+  async disposeAfterSettled(): Promise<boolean> {
+    if (this.disposed) return true
+    if (!(await this.settle()) || !this.isIdle) return false
+    this.disposed = true
+    this.stop()
+    this.changed = () => {}
+    return true
   }
 }

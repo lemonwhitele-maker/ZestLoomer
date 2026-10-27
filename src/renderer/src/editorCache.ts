@@ -8,6 +8,16 @@ export const editorCache = new Map<
   }
 >()
 
+/** Approximate UTF-16 serialized history size; not a claim about actual JS heap. */
+export function trimEditorCache(): void {
+  let bytes = 0
+  const entries = [...editorCache.entries()].reverse()
+  entries.forEach(([key, value], index) => {
+    bytes += 2 * (value.source.length + JSON.stringify(value.json).length)
+    if (index >= 50 || bytes > 24 * 1024 * 1024) editorCache.delete(key)
+  })
+}
+
 export interface EditorPosition {
   anchor: number
   head: number
@@ -18,7 +28,12 @@ const positions = new Map<string, EditorPosition>()
 export function readPosition(key: string): EditorPosition | undefined {
   if (positions.has(key)) return positions.get(key)
   try {
-    const value = JSON.parse(localStorage.getItem(`loom.editor-position:${key}`) || 'null')
+    // Existing Loom profiles retain their positions; subsequent writes use the new key.
+    const value = JSON.parse(
+      localStorage.getItem(`zestloomer.editor-position:${key}`) ??
+        localStorage.getItem(`loom.editor-position:${key}`) ??
+        'null'
+    )
     if (
       value &&
       ['anchor', 'head', 'scrollTop'].every(
@@ -37,7 +52,7 @@ export function readPosition(key: string): EditorPosition | undefined {
 export function writePosition(key: string, value: EditorPosition): void {
   positions.set(key, value)
   try {
-    localStorage.setItem(`loom.editor-position:${key}`, JSON.stringify(value))
+    localStorage.setItem(`zestloomer.editor-position:${key}`, JSON.stringify(value))
   } catch {
     /* Keep the in-memory position when storage is unavailable. */
   }

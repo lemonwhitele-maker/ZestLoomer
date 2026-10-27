@@ -87,12 +87,21 @@ test('export persists exact API requests, full tool results and responses across
     bodies
   )
   assert.equal(exported.log!.tools.length, 1)
-  assert.equal((exported.log!.tools[0].result as { text: string }).text, d.content)
+  assert.equal(
+    (exported.log!.tools[0].result as { lines: { text: string; eol?: string }[] }).lines
+      .map((line) => line.text + (line.eol ?? ''))
+      .join(''),
+    d.content
+  )
   assert.equal(exported.log!.response!.text, '先读资料。完整回复：已分析选区。')
   assert.equal(exported.log!.rounds[1].response!.text, '完整回复：已分析选区。')
   assert.ok(
     bodies[1].messages.some(
-      (m: any) => m.role === 'tool' && JSON.parse(m.content).text === d.content
+      (m: any) =>
+        m.role === 'tool' &&
+        JSON.parse(m.content)
+          .lines.map((line: { text: string; eol?: string }) => line.text + (line.eol ?? ''))
+          .join('') === d.content
     )
   )
   assert.equal(JSON.stringify(exported).includes('never-export-api-secret'), false)

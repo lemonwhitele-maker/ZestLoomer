@@ -9,7 +9,8 @@ export async function migrateTemplates(store: DocumentStore, book: Book, apply =
   const changes: { before: DocumentSnapshot; content: string }[] = []
   const blocked: string[] = []
   for (const meta of await store.list(book.id)) {
-    if (meta.trashedAt || !['characters', 'settings'].includes(meta.kind)) continue
+    if (meta.readonlyExample || meta.trashedAt || !['characters', 'settings'].includes(meta.kind))
+      continue
     const { document, draft } = await store.read(book.id, meta.id)
     const content = consistentTemplate(document.kind, document.content)
     if (!validateTemplate(document.kind, content)) throw new Error(`模板无法稳定归一：${meta.id}`)

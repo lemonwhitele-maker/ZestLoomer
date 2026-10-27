@@ -9,8 +9,16 @@ const { version } = JSON.parse(await readFile(resolve(root, 'package.json'), 'ut
 await mkdir(resolve(root, '.test-artifacts'), { recursive: true })
 const fixture = await mkdtemp(resolve(root, '.test-artifacts/packaged-'))
 const profile = resolve(fixture, 'profile')
-const executablePath = process.env.LOOM_PACKAGED_EXE || resolve(root, 'dist/win-unpacked/Loom.exe')
-const env = { ...process.env, LOOM_USER_DATA: profile, LOOM_TEST_HIDDEN: '1' }
+const library = resolve(fixture, '中文 书库')
+await mkdir(library)
+const executablePath =
+  process.env.ZESTLOOMER_PACKAGED_EXE || resolve(root, 'dist/win-unpacked/ZestLoomer.exe')
+const env = {
+  ...process.env,
+  ZESTLOOMER_USER_DATA: profile,
+  ZESTLOOMER_BOOKLIST: library,
+  ZESTLOOMER_TEST_HIDDEN: '1'
+}
 delete env.ELECTRON_RUN_AS_NODE
 delete env.ELECTRON_RENDERER_URL
 const errors = []
@@ -20,13 +28,19 @@ async function launch() {
   electron = await _electron.launch({ executablePath, args: [], cwd: fixture, env, timeout: 30000 })
   page = await electron.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
+  await page.locator('.workspace-header').waitFor()
+  const menu = page.getByRole('button', { name: '作品菜单', exact: true })
+  if ((await menu.isVisible()) && (await menu.getAttribute('aria-expanded')) !== 'true')
+    await menu.click()
   await expect(page.getByRole('button', { name: '新建作品', exact: true })).toBeEnabled()
   const runtime = await electron.evaluate(({ app }) => ({
     packaged: app.isPackaged,
+    name: app.getName(),
     version: app.getVersion(),
     profile: app.getPath('userData')
   }))
   assert.equal(runtime.packaged, true)
+  assert.equal(runtime.name, 'ZestLoomer')
   assert.equal(runtime.version, version)
   assert.equal(runtime.profile, profile)
   return runtime
@@ -40,7 +54,7 @@ try {
   const runtime = await launch()
   await electron.evaluate(({ dialog }, directory) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] })
-  }, fixture)
+  }, library)
   await page.getByRole('button', { name: '新建作品', exact: true }).click()
   await page.getByRole('textbox', { name: '新标题' }).fill('中文 安装验收小说')
   await page.getByRole('button', { name: '创建', exact: true }).click()
@@ -50,13 +64,13 @@ try {
       if (!result.ok) throw new Error(result.message)
       return result.value
     }
-    const boot = unwrap(await window.loom.bootstrap())
+    const boot = unwrap(await window.zestloomer.bootstrap())
     const book = boot.books[0]
     const { document } = unwrap(
-      await window.loom.create(book.id, 'chapters', '第一章 验收', 'blank')
+      await window.zestloomer.create(book.id, 'chapters', '第一章 验收', 'blank')
     )
     const saved = unwrap(
-      await window.loom.save({
+      await window.zestloomer.save({
         bookId: book.id,
         id: document.id,
         title: document.title,
@@ -74,8 +88,8 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
   }, importPath)
   const imported = await page.evaluate(async () => ({
-    methods: Object.keys(window.loom.imports),
-    draft: await window.loom.imports.chooseFile('utf8')
+    methods: Object.keys(window.zestloomer.imports),
+    draft: await window.zestloomer.imports.chooseFile('utf8')
   }))
   assert.deepEqual(imported.methods, ['chooseFile'])
   assert.equal(imported.draft.ok, true)
@@ -89,8 +103,8 @@ try {
   }, backupParent)
   const operations = await page.evaluate(
     async (bookId) => ({
-      backup: await window.loom.backup(bookId),
-      export: await window.loom.exportBook(bookId)
+      backup: await window.zestloomer.backup(bookId),
+      export: await window.zestloomer.exportBook(bookId)
     }),
     saved.book.id
   )
@@ -103,7 +117,7 @@ try {
   await launch()
   const reopened = await page.evaluate(
     async ({ bookId, id }) => {
-      return await window.loom.read(bookId, id)
+      return await window.zestloomer.read(bookId, id)
     },
     { bookId: saved.book.id, id: saved.saved.id }
   )
@@ -130,10 +144,7 @@ try {
     backupFiles: await readdir(backupParent),
     passed: true
   }
-  await writeFile(
-    resolve(root, `../loom-${version}-packaged-smoke.json`),
-    JSON.stringify(report, null, 2) + '\n'
-  )
+  await writeFile(resolve(fixture, 'packaged-smoke.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
 } finally {
   if (electron) {

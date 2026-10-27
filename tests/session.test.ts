@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DocumentSession } from '../src/renderer/src/session'
 import {
   type DocumentSnapshot,
-  type LoomAPI,
+  type ZestLoomerAPI,
   type SaveInput,
   type Draft
 } from '../src/shared/documents'
@@ -27,7 +27,7 @@ test('concurrent flush calls share the recovery barrier and do not conflict with
   })
   let version = original.version
   const writes: string[] = []
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async () => {
       await gate
       return { ok: true, value: undefined }
@@ -62,7 +62,7 @@ test('concurrent flush calls share the recovery barrier and do not conflict with
 
 test('adopting a disk version emits a content replacement distinct from local input', () => {
   const changes: (string | undefined)[] = []
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async () => ({ ok: true, value: undefined }),
     save: async () => ({ ok: true, value: original })
   }
@@ -82,7 +82,7 @@ test('a save acknowledgement does not overwrite typing during the request', asyn
   })
   const writes: SaveInput[] = []
   let draft: Draft | null = null
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, value) => {
       draft = value
       return { ok: true, value: undefined }
@@ -126,7 +126,7 @@ test('a save acknowledgement does not overwrite typing during the request', asyn
 })
 test('conflict preserves local text and requires explicit resolution', async () => {
   let calls = 0
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async () => ({ ok: true, value: undefined }),
     save: async () => {
       calls++
@@ -146,7 +146,7 @@ test('conflict preserves local text and requires explicit resolution', async () 
   session.stop()
 })
 test('empty recovery drafts are restored and stale recovery does not auto-write', () => {
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async () => ({ ok: true, value: undefined }),
     save: async () => {
       throw new Error('must not run')
@@ -164,7 +164,7 @@ test('empty recovery drafts are restored and stale recovery does not auto-write'
 
 test('editing a conflicted recovery draft preserves its original base across restarts', async () => {
   let stored: Draft | null = null
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, draft) => {
       stored = draft
       return { ok: true, value: undefined }
@@ -193,7 +193,7 @@ test('editing a conflicted recovery draft preserves its original base across res
 
 test('draft storage failure can be retried after the disk becomes writable', async () => {
   let failed = true
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async () =>
       failed ? { ok: false, code: 'IO', message: '不可写' } : { ok: true, value: undefined },
     save: async (input) => ({
@@ -214,7 +214,7 @@ test('draft storage failure can be retried after the disk becomes writable', asy
 test('settling a title with surrounding whitespace accepts the stored normalization once', async () => {
   let calls = 0
   let draft: Draft | null = null
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, value) => {
       draft = value
       return { ok: true, value: undefined }
@@ -255,7 +255,7 @@ test('a normalized title acknowledgement preserves title and content typed durin
   })
   const writes: SaveInput[] = []
   let draft: Draft | null = null
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, value) => {
       draft = value
       return { ok: true, value: undefined }
@@ -311,7 +311,7 @@ test('coalesces rapid draft writes when disk is slow and preserves the latest re
   })
   let draftCalls = 0
   let latestDraft: Draft | null = null
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, draft) => {
       draftCalls++
       latestDraft = draft
@@ -354,7 +354,7 @@ test('editing during draft clearing does not let the older clearing wipe out new
   })
   let clearInFlight = false
   const draftHistory: (Draft | null)[] = []
-  const api: Pick<LoomAPI, 'save' | 'draft'> = {
+  const api: Pick<ZestLoomerAPI, 'save' | 'draft'> = {
     draft: async (_book, _id, draft) => {
       draftHistory.push(draft)
       if (draft === null) {

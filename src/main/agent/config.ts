@@ -198,7 +198,7 @@ export class AgentConfigStore {
           {
             type: 'function',
             function: {
-              name: 'loom_connection_probe',
+              name: 'zestloomer_connection_probe',
               description: 'Echo a synthetic test value. No files or side effects.',
               parameters: {
                 type: 'object',
@@ -212,16 +212,16 @@ export class AgentConfigStore {
         const messages = [
           {
             role: 'user' as const,
-            content: `Protocol test: call loom_connection_probe exactly once with value ${nonce}. After receiving the tool result, reply with that value.`
+            content: `Protocol test: call zestloomer_connection_probe exactly once with value ${nonce}. After receiving the tool result, reply with that value.`
           }
         ]
         const first = await new ApiRuntime(config, key, {
           tools,
-          toolChoice: { type: 'function', function: { name: 'loom_connection_probe' } }
+          toolChoice: { type: 'function', function: { name: 'zestloomer_connection_probe' } }
         }).complete(messages, controller.signal, () => {})
         if (
           first.calls.length !== 1 ||
-          first.calls[0].name !== 'loom_connection_probe' ||
+          first.calls[0].name !== 'zestloomer_connection_probe' ||
           JSON.parse(first.calls[0].arguments).value !== nonce
         )
           fail('TEST_TOOLS', '模型未正确调用测试函数；普通聊天成功不代表支持工具调用')

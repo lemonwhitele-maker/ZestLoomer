@@ -23,7 +23,7 @@ export function matchReadDocuments(
   const matches = new Map<string, ReadRelatedDocument>()
   for (const kind of ['characters', 'settings'] as const) {
     for (const document of documents) {
-      if (document.kind !== kind || document.trashedAt) continue
+      if (document.kind !== kind || document.trashedAt || document.readonlyExample) continue
       const path = `book/${kind}/${document.id}.md`
       const matchedNames = new Set<string>()
       for (const value of [document.title, ...parseKnowledgeAliases(document.content)]) {

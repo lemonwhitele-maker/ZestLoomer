@@ -2,9 +2,45 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { consistentTemplate, templates, validateTemplate } from '../src/shared/templates'
+import {
+  consistentTemplate,
+  initialContent,
+  templates,
+  validateTemplate
+} from '../src/shared/templates'
 import { DocumentStore } from '../src/main/documents'
 import { migrateTemplates } from '../src/main/templateMigration'
+
+test('signature speech stays optional for blank documents and preserves supplied styles without duplication', () => {
+  assert.ok(initialContent('characters', 'basic').includes('### 经典发言\n'))
+  assert.equal(initialContent('characters', 'blank'), '')
+  for (const kind of ['settings', 'outlines', 'notes', 'chapters'] as const)
+    assert.equal(initialContent(kind, 'basic').includes('经典发言'), false)
+  for (const eol of ['\n', '\r\n']) {
+    for (const label of ['### 经典发言']) {
+      const speech = [
+        label,
+        '',
+        '- “事情办完再说谢。”——简短直接。',
+        '- “你倒是替我安排得明白。”——反讽。'
+      ].join(eol)
+      const original = [speech, '', '> 别名：小林', '', '### 核心定位', '主角'].join(eol)
+      const result = consistentTemplate('characters', original)
+      assert.ok(result.includes(speech))
+      assert.ok(result.includes('> 别名：小林'))
+      assert.equal(result.match(/经典发言/g)?.length, 1)
+      assert.equal(consistentTemplate('characters', result), result)
+      assert.equal(result.replaceAll(eol, '').includes('\n'), false)
+    }
+  }
+  for (const quote of ['', '> ']) {
+    const example = `${quote}\`\`\`md\n${quote}经典发言：示例\n${quote}\`\`\``
+    const result = consistentTemplate('characters', `${example}\n\n### 核心定位\n主角`)
+    assert.ok(result.includes('### 经典发言\n'))
+    assert.ok(result.includes(example))
+    assert.equal(consistentTemplate('characters', result), result)
+  }
+})
 
 test('templates preserve facts, aliases, unknown sections and code while merging historical headings', () => {
   const original =

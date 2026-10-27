@@ -5,13 +5,13 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const lock = JSON.parse(await readFile(resolve(root, 'package-lock.json'), 'utf8'))
 const sections = [
-  'Loom — third-party notices',
+  'ZestLoomer — third-party notices',
   '51mazi: https://github.com/xiaoshengxianjun/51mazi — Copyright (c) 2025 小圣贤君; MIT text preserved in LICENSE.',
   '51mazi_chatbox: https://github.com/lemonwhitele-maker/51mazi_chatbox — Agent collaboration and template design reference; see docs/provenance.md.',
   'Generated from the locked installed runtime dependencies and bundled Vue renderer dependencies.',
   'The original application MIT notice is preserved in LICENSE.',
-  'Electron 39.2.7 includes Chromium, Node.js and other components. Full upstream notices are shipped beside Loom.exe as LICENSE.electron.txt and LICENSES.chromium.html.',
-  'The Loom logo is an existing application asset.'
+  'Electron 39.2.7 includes Chromium, Node.js and other components. Full upstream notices are shipped beside ZestLoomer.exe as LICENSE.electron.txt and LICENSES.chromium.html.',
+  'The ZestLoomer logo retains the existing Loom application asset.'
 ]
 for (const [path, entry] of Object.entries(lock.packages)) {
   if (!path || (entry.dev && !/node_modules\/(vue|@vue\/[^/]+)$/.test(path))) continue

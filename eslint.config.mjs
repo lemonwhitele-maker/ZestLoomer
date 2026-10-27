@@ -5,7 +5,15 @@ import typescriptParser from '@typescript-eslint/parser'
 import typescriptPlugin from '@typescript-eslint/eslint-plugin'
 
 export default [
-  { ignores: ['**/node_modules', '**/dist', '**/out', '.test-artifacts/**'] },
+  {
+    ignores: [
+      '**/node_modules',
+      '**/dist',
+      '**/out',
+      '.test-artifacts/**',
+      'docs/p0/baseline-out/**'
+    ]
+  },
   eslintConfig,
   ...eslintPluginVue.configs['flat/recommended'],
   {

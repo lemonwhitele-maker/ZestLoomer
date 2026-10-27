@@ -24,30 +24,56 @@ import {
 import { DocumentSession, type SessionChange } from './session'
 import { counters } from '../../shared/perf'
 import { SessionWordCounts } from './wordCounts'
-import loomLogo from '../../shared/assets/loom-logo.png'
-import { knowledgeEntries } from './editorKnowledge'
+import zestloomerLogo from '../../shared/assets/zestloomer-logo-44.png'
+import ActionMenu from './components/workspace/ActionMenu.vue'
+import WorkspaceNavigation from './components/workspace/WorkspaceNavigation.vue'
+import WorkspaceShell from './components/workspace/WorkspaceShell.vue'
+import OverlayHost from './components/workspace/OverlayHost.vue'
+import LazyDialog from './components/workspace/LazyDialog.vue'
+import { RefreshQueue } from './refreshQueue'
+import { trimSessions, sessionBytes } from './sessionManager'
+import { editorCache } from './editorCache'
+import { knowledgeEntries, type KnowledgeEntry } from './editorKnowledge'
+import StoryTools from './components/StoryTools.vue'
 import TextEditor from './components/TextEditor.vue'
 import AgentPanel from './components/Agent/AgentPanel.vue'
-import SettingsCenter from './components/SettingsCenter.vue'
-import ChapterCreateDialog from './components/ChapterCreateDialog.vue'
-import ChapterOrganizeDialog from './components/ChapterOrganizeDialog.vue'
-import QuickOpenDialog from './components/QuickOpenDialog.vue'
-import ImportDialog from './components/ImportDialog.vue'
-import HistoryDialog from './components/HistoryDialog.vue'
+const loadSettingsCenter = () => import('./components/SettingsCenter.vue')
+const loadChapterCreateDialog = () => import('./components/ChapterCreateDialog.vue')
+const loadChapterOrganizeDialog = () => import('./components/ChapterOrganizeDialog.vue')
+const loadQuickOpenDialog = () => import('./components/QuickOpenDialog.vue')
+const loadImportDialog = () => import('./components/ImportDialog.vue')
+const loadHistoryDialog = () => import('./components/HistoryDialog.vue')
 import { defaultNamingRule, type NamingRule } from '../../shared/chapterNaming'
 import type { BookPreferences, BookStats, Placement } from '../../shared/workspace'
 import type { ImportDraft } from '../../shared/imports'
 import type { AgentConfig, AgentSnapshot, AgentWorkspace } from '../../shared/agent'
 import { defaultToolApiConfig, type ToolApiConfig } from '../../shared/toolApi'
 
-const api = window.loom
+const storyTools = ref<InstanceType<typeof StoryTools>>()
+const api = window.zestloomer
 const books = ref<Book[]>([])
 const currentBook = ref<Book | null>(null)
 const kind = ref<DocumentKind>('chapters')
 const inTrash = ref(false)
+const foreshadowSource = ref(false)
+const foreshadowTable = computed(
+  () => kind.value === 'foreshadows' && !inTrash.value && !foreshadowSource.value
+)
 const documents = ref<DocumentMeta[]>([])
 const knowledgeContent = ref<Record<string, string>>({})
-const highlightEntries = computed(() => knowledgeEntries(documents.value, knowledgeContent.value))
+const highlightEntries = computed((previous: KnowledgeEntry[] | undefined) => {
+  const next = knowledgeEntries(documents.value, knowledgeContent.value)
+  return previous &&
+    previous.length === next.length &&
+    next.every(
+      (entry, index) =>
+        entry.name === previous[index].name &&
+        entry.title === previous[index].title &&
+        entry.kind === previous[index].kind
+    )
+    ? previous
+    : next
+})
 const highlightEnabled = computed(
   () => !currentBook.value || preferences.knowledgeHighlight?.[currentBook.value.id] !== false
 )
@@ -128,14 +154,61 @@ function startChapterDrag(id: string, event: DragEvent): void {
   dragId.value = id
   event.dataTransfer?.setData('text/plain', id)
 }
+const modernLayout = ref(localStorage.getItem('zestloomer.workspace-v2') !== 'false')
+watch(modernLayout, (value) => localStorage.setItem('zestloomer.workspace-v2', String(value)))
+const writingOptions = reactive({
+  typewriter: localStorage.getItem('zestloomer.typewriter') === 'true',
+  chinesePairs: localStorage.getItem('zestloomer.chinesePairs') === 'true',
+  paperWidth: Number(localStorage.getItem('zestloomer.paperWidth')) || 820,
+  pinTools: localStorage.getItem('zestloomer.pinTools') !== 'false'
+})
+watch(writingOptions, (value) => {
+  for (const [key, item] of Object.entries(value))
+    localStorage.setItem('zestloomer.' + key, String(item))
+})
+const explorerWidth = ref(
+  Math.max(180, Math.min(360, Number(localStorage.getItem('zestloomer.explorerWidth')) || 224))
+)
+watch(explorerWidth, (value) => localStorage.setItem('zestloomer.explorerWidth', String(value)))
 const viewportWidth = ref(window.innerWidth)
+const listOverlay = computed(
+  () =>
+    modernLayout.value &&
+    (viewportWidth.value < 1180 ||
+      viewportWidth.value - 48 - explorerWidth.value - (agentShown.value ? 388 : 0) < 480)
+)
+let explorerStart = 0
+let explorerInitial = 224
+const explorerResizing = ref(false)
+function resizeExplorer(event: PointerEvent): void {
+  if (explorerResizing.value)
+    explorerWidth.value = Math.max(
+      180,
+      Math.min(360, explorerInitial + event.clientX - explorerStart)
+    )
+}
+function explorerKeyboard(event: KeyboardEvent): void {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  explorerWidth.value =
+    event.key === 'Home'
+      ? 224
+      : event.key === 'End'
+        ? 360
+        : Math.max(
+            180,
+            Math.min(360, explorerWidth.value + (event.key === 'ArrowRight' ? 20 : -20))
+          )
+}
+const drawerOpen = ref(false)
 const resizing = ref(false)
 const agentShown = computed(() => preferences.agentVisible && !preferences.focusMode)
 const listShown = computed(
   () =>
-    preferences.listVisible &&
+    !foreshadowTable.value &&
+    (listOverlay.value ? drawerOpen.value : preferences.listVisible) &&
     !preferences.focusMode &&
-    !(agentShown.value && viewportWidth.value < 1180)
+    (modernLayout.value || !(agentShown.value && viewportWidth.value < 1180))
 )
 const layoutKey = computed(() => currentBook.value?.id || 'global')
 const maxAgentWidth = computed(() =>
@@ -144,9 +217,9 @@ const maxAgentWidth = computed(() =>
     Math.min(
       900,
       viewportWidth.value -
-        (viewportWidth.value <= 950 ? 120 : 166) -
-        (listShown.value ? 236 : 0) -
-        420 -
+        (modernLayout.value ? 48 : viewportWidth.value <= 950 ? 120 : 166) -
+        (listShown.value && !listOverlay.value ? explorerWidth.value + 6 : 0) -
+        (modernLayout.value ? 480 : 420) -
         8
     )
   )
@@ -192,55 +265,39 @@ function keyboardResize(event: KeyboardEvent): void {
   void savePreferences()
 }
 function setLayout(mode: 'focus' | 'chat'): void {
+  const position = editor.value?.position()
   preferences.focusMode = mode === 'focus' ? !preferences.focusMode : false
   if (mode === 'chat') preferences.agentVisible = true
+  if (position) void nextTick(() => editor.value?.restorePosition(position))
   void savePreferences()
+}
+let zenPreviousFocus = false
+let zenActive = false
+async function toggleZen(): Promise<void> {
+  if (zenActive) {
+    if (document.fullscreenElement) await document.exitFullscreen()
+    return
+  }
+  zenPreviousFocus = preferences.focusMode
+  try {
+    await document.documentElement.requestFullscreen()
+    zenActive = true
+    if (!preferences.focusMode) setLayout('focus')
+  } catch {
+    message.value = '无法进入全屏，仍可使用专注写作。'
+  }
+}
+function fullscreenChanged(): void {
+  if (!document.fullscreenElement && zenActive) {
+    zenActive = false
+    if (preferences.focusMode !== zenPreviousFocus) setLayout('focus')
+  }
 }
 const referenceOpen = ref(false)
 const referenceQuery = ref('')
 const selectedText = ref('')
 const conflict = ref<DocumentSnapshot | null>(null)
-const modal = ref<'book' | 'document' | 'trash' | null>(null)
-let modalPreviousFocus: HTMLElement | null = null
-function activeDialog(): HTMLElement | undefined {
-  return [...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
-    .filter((element) => element.offsetParent !== null)
-    .at(-1)
-}
-function dialogControls(dialog: HTMLElement): HTMLElement[] {
-  return [
-    ...dialog.querySelectorAll<HTMLElement>(
-      'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]:not(:disabled)'
-    )
-  ].filter((element) => element.offsetParent !== null)
-}
-watch(
-  [
-    settingsOpen,
-    modal,
-    chapterCreateOpen,
-    organizeOpen,
-    quickOpen,
-    importOpen,
-    historyOpen,
-    moveDialog,
-    bulkTrashOpen,
-    referenceOpen,
-    conflict
-  ],
-  async (states, previous) => {
-    const before = document.activeElement as HTMLElement | null
-    if (states.some(Boolean) && !previous.some(Boolean)) modalPreviousFocus = before
-    await nextTick()
-    const dialog = activeDialog()
-    if (dialog) {
-      if (!dialog.contains(document.activeElement)) dialogControls(dialog)[0]?.focus()
-    } else {
-      if (modalPreviousFocus?.isConnected) modalPreviousFocus.focus()
-      modalPreviousFocus = null
-    }
-  }
-)
+const modal = ref<'book' | 'renameBook' | 'document' | 'trash' | null>(null)
 const newTitle = ref('')
 const templateChoice = ref<'basic' | 'blank'>('basic')
 const agentSnapshot = ref<AgentSnapshot>({ conversations: [], proposals: [], active: null })
@@ -316,14 +373,14 @@ let lastWordCountTime = 0
 
 function updateWordCountDisplay(force = false) {
   const now = Date.now()
-  const content = current.value?.content || ''
-  const compute = () => Array.from(content.replace(/\s/g, '')).length
+  const compute = () => (current.value ? wordCountCache.count(current.value) : 0)
   if (counters.enabled)
     counters.setSessionCacheEstimate(
       [...sessions.values()].reduce((bytes, item) => bytes + item.content.length * 2, 0)
     )
   if (force || now - lastWordCountTime >= 150) {
     wordCountDisplay.value = compute()
+    updateTotalWords()
     wordCountRevision.value++
     lastWordCountTime = now
     if (wordCountTimer) {
@@ -333,9 +390,8 @@ function updateWordCountDisplay(force = false) {
   } else if (!wordCountTimer) {
     wordCountTimer = setTimeout(
       () => {
-        wordCountDisplay.value = Array.from(
-          (current.value?.content || '').replace(/\s/g, '')
-        ).length
+        wordCountDisplay.value = compute()
+        updateTotalWords()
         wordCountRevision.value++
         lastWordCountTime = Date.now()
         wordCountTimer = undefined
@@ -381,10 +437,29 @@ function wordsFor(doc: DocumentMeta): number {
     ? wordCountCache.count(cached)
     : bookStats.value.words[doc.id] || 0
 }
-const totalWords = computed(() => {
-  void wordCountRevision.value
-  return activeChapters.value.reduce((total, doc) => total + wordsFor(doc), 0)
-})
+const totalWords = ref(0)
+const chapterWords = new Map<string, number>()
+function updateTotalWords(): void {
+  const active = current.value
+  if (!active || !chapterWords.has(active.document.id)) return
+  const count = wordCountCache.count(active)
+  totalWords.value += count - chapterWords.get(active.document.id)!
+  chapterWords.set(active.document.id, count)
+}
+watch(
+  [activeChapters, bookStats, session],
+  () => {
+    chapterWords.clear()
+    let total = 0
+    for (const doc of activeChapters.value) {
+      const count = wordsFor(doc)
+      chapterWords.set(doc.id, count)
+      total += count
+    }
+    totalWords.value = total
+  },
+  { immediate: true }
+)
 const chapterIndex = computed(() =>
   activeChapters.value.findIndex((doc) => doc.id === current.value?.document.id)
 )
@@ -408,6 +483,7 @@ const orderable = computed(
 const referenceType: Record<DocumentKind, string> = {
   chapters: 'chapter',
   notes: 'note',
+  foreshadows: 'foreshadow',
   characters: 'character',
   settings: 'setting',
   outlines: 'outline'
@@ -585,6 +661,8 @@ async function sendAgent(
     if (!options.document) {
       delete workspace.documentId
       delete workspace.savedVersion
+      delete workspace.cursor
+      delete workspace.editorContent
     }
     if (!options.document || !options.selection) delete workspace.selection
     resetAgentText()
@@ -664,11 +742,26 @@ async function savePreferences(): Promise<void> {
   }
 }
 function toggleAgent(): void {
+  if (preferences.focusMode) preferences.focusMode = false
   preferences.agentVisible = !preferences.agentVisible
   void savePreferences()
 }
 function toggleList(): void {
-  if (preferences.focusMode || (agentShown.value && viewportWidth.value < 1180)) {
+  if (modernLayout.value && preferences.focusMode && !listOverlay.value) {
+    preferences.focusMode = false
+    preferences.listVisible = true
+    void savePreferences()
+    return
+  }
+  if (listOverlay.value) {
+    preferences.focusMode = false
+    drawerOpen.value = !drawerOpen.value
+    return
+  }
+  if (
+    preferences.focusMode ||
+    (!modernLayout.value && agentShown.value && viewportWidth.value < 1180)
+  ) {
     preferences.focusMode = false
     preferences.agentVisible = false
     preferences.listVisible = true
@@ -676,6 +769,7 @@ function toggleList(): void {
   void savePreferences()
 }
 const knowledgeCache = new Map<string, { generation: string; content: string }>()
+let workspaceGeneration = 0
 let knowledgeRequest = 0
 let listRequest = 0
 async function reloadList(): Promise<void> {
@@ -688,7 +782,7 @@ async function reloadList(): Promise<void> {
   selectedIds.value = selectedIds.value.filter((id) =>
     documents.value.some((doc) => doc.id === id && doc.kind === kind.value && !doc.trashedAt)
   )
-  void reloadKnowledge().catch(notify)
+  await reloadKnowledge().catch(notify)
   void refreshStats().catch(notify)
   void refreshAgent().catch(notify)
 }
@@ -733,20 +827,47 @@ async function reloadKnowledge(): Promise<void> {
         knowledgeCache.set(key(bookId, doc.id), { generation: opened.document.generation, content })
     }
   }
-  if (valid()) knowledgeContent.value = nextContent
-}
-async function refreshFromDisk(): Promise<void> {
-  const bookId = currentBook.value?.id
-  if (!bookId || busy.value) return
-  try {
-    await api.workspace.refresh(bookId).then(unwrap)
-    if (currentBook.value?.id !== bookId) return
-    knowledgeCache.clear()
-    await reloadList()
-  } catch (error) {
-    if (currentBook.value?.id === bookId) notify(error)
+  if (valid()) {
+    const liveKeys = new Set(sources.map((doc) => key(bookId, doc.id)))
+    for (const cacheKey of knowledgeCache.keys())
+      if (!liveKeys.has(cacheKey)) knowledgeCache.delete(cacheKey)
+    knowledgeContent.value = nextContent
   }
 }
+const diskRefresh = new RefreshQueue(async (force) => {
+  const bookId = currentBook.value?.id
+  const generation = workspaceGeneration
+  if (!bookId) return
+  try {
+    await api.workspace.refresh(bookId).then(unwrap)
+    if (currentBook.value?.id !== bookId || generation !== workspaceGeneration) return
+    if (force) knowledgeCache.clear()
+    await reloadList()
+  } catch (error) {
+    if (currentBook.value?.id === bookId && generation === workspaceGeneration) notify(error)
+  }
+})
+let deferredRefresh = false
+function refreshFromDisk(force = false): Promise<void> {
+  if (busy.value) {
+    deferredRefresh = true
+    deferredForce ||= force
+    return Promise.resolve()
+  }
+  return diskRefresh.request(force)
+}
+let deferredForce = false
+function focusRefresh(): void {
+  void refreshFromDisk()
+}
+watch(busy, (value) => {
+  if (!value && deferredRefresh) {
+    deferredRefresh = false
+    const force = deferredForce
+    deferredForce = false
+    void refreshFromDisk(force)
+  }
+})
 function toggleKnowledgeHighlight(): void {
   if (!currentBook.value) return
   preferences.knowledgeHighlight = {
@@ -757,16 +878,26 @@ function toggleKnowledgeHighlight(): void {
 }
 async function refreshStats(): Promise<void> {
   const bookId = currentBook.value?.id
+  const generation = workspaceGeneration
   if (!bookId) return
   const value = unwrap(await api.workspace.stats(bookId))
-  if (currentBook.value?.id === bookId) bookStats.value = value
+  if (currentBook.value?.id === bookId && generation === workspaceGeneration)
+    bookStats.value = value
 }
 async function flushCurrent(): Promise<boolean> {
+  if (storyTools.value && !storyTools.value.settled()) {
+    message.value = '请先保存或取消伏笔表格中的修改。'
+    return false
+  }
   if (!session.value || (await session.value.settle())) return true
   message.value = '当前内容尚未保存，请先处理保存失败或版本冲突。'
   return false
 }
 async function flushAll(): Promise<boolean> {
+  if (storyTools.value && !storyTools.value.settled()) {
+    message.value = '窗口保持打开：请先保存或取消伏笔表格中的修改。'
+    return false
+  }
   let okay = true
   for (const item of sessions.values())
     if (!(await item.settle())) {
@@ -779,7 +910,9 @@ async function flushAll(): Promise<boolean> {
 async function openDocument(id: string, remember = true): Promise<void> {
   if (!currentBook.value || !(await flushCurrent())) return
   const bookId = currentBook.value.id
+  const generation = workspaceGeneration
   const opened = unwrap(await api.read(bookId, id))
+  if (bookId !== currentBook.value?.id || generation !== workspaceGeneration) return
   if (opened.document.kind !== kind.value || Boolean(opened.document.trashedAt) !== inTrash.value)
     selectedIds.value = []
   if (remember && session.value && session.value.document.id !== id)
@@ -793,14 +926,17 @@ async function openDocument(id: string, remember = true): Promise<void> {
     target.document.version !== opened.document.version ||
     target.document.trashedAt !== opened.document.trashedAt
   ) {
-    target?.stop()
+    if (target && !(await target.disposeAfterSettled())) return
     const created = markRaw(
       new DocumentSession(bookId, opened, api, (change) => track(created, change))
     )
     target = created
     sessions.set(key(bookId, id), target)
   }
+  sessions.delete(key(bookId, id))
+  sessions.set(key(bookId, id), target)
   session.value = target
+  await trimSessions(sessions, target)
   kind.value = target.document.kind
   inTrash.value = Boolean(target.document.trashedAt)
   preferences.lastDocuments[bookId] = id
@@ -826,6 +962,7 @@ async function chooseFirst(): Promise<void> {
 }
 async function switchKind(next: DocumentKind, trash = false): Promise<void> {
   if (!(await flushCurrent())) return
+  foreshadowSource.value = false
   kind.value = next
   inTrash.value = trash
   filter.value = ''
@@ -842,16 +979,36 @@ async function switchBook(book: Book): Promise<void> {
     return
   }
   if (!(await flushAll())) return
+  const nextPreferences = unwrap(await api.workspace.getPreferences(book.id))
+  const nextDocuments = unwrap(await api.list(book.id))
   const nextAgent = unwrap(await api.agent.bind(book.id))
+  const previousBook = currentBook.value?.id
+  for (const item of sessions.values()) {
+    if (item.bookId !== book.id && !(await item.disposeAfterSettled())) {
+      if (previousBook) await api.agent.bind(previousBook)
+      message.value = '旧作品尚未安全保存，请重试。'
+      return
+    }
+  }
+  workspaceGeneration++
+  agentSnapshotRequest++
+  knowledgeRequest++
+  listRequest++
   currentBook.value = book
   knowledgeContent.value = {}
-  bookPreferences.value = unwrap(await api.workspace.getPreferences(book.id))
+  knowledgeCache.clear()
+  documents.value = nextDocuments
+  bookPreferences.value = nextPreferences
   navigation.value = []
   selectedIds.value = []
   agentSnapshot.value = nextAgent
   resetAgentText()
   agentToolText.value = ''
   session.value = null
+  await nextTick() // Let the old editor retain its lightweight position before cache removal.
+  for (const [cacheKey, item] of sessions) if (item.bookId !== book.id) sessions.delete(cacheKey)
+  for (const cacheKey of editorCache.keys())
+    if (!cacheKey.startsWith(book.id + ':')) editorCache.delete(cacheKey)
   inTrash.value = false
   filter.value = ''
   conflict.value = null
@@ -866,15 +1023,19 @@ async function switchBook(book: Book): Promise<void> {
   }
   await savePreferences()
 }
-function askNew(mode: 'book' | 'document'): void {
+function askNew(mode: 'book' | 'renameBook' | 'document'): void {
   message.value = ''
+  if (mode === 'document' && kind.value === 'foreshadows' && !inTrash.value) {
+    void storyTools.value?.addRow()
+    return
+  }
   if (mode === 'document' && kind.value === 'chapters') {
     createAttempt = null
     chapterCreateOpen.value = true
     return
   }
   modal.value = mode
-  newTitle.value = ''
+  newTitle.value = mode === 'renameBook' ? currentBook.value?.title || '' : ''
   templateChoice.value = 'basic'
   void nextTick(() => modalInput.value?.focus())
 }
@@ -1208,6 +1369,10 @@ async function submitModal(): Promise<void> {
         books.value.unshift(book)
         await switchBook(book)
       }
+    } else if (modal.value === 'renameBook' && currentBook.value) {
+      const book = unwrap(await api.renameBook(currentBook.value.id, newTitle.value))
+      books.value = books.value.map((item) => (item.id === book.id ? book : item))
+      currentBook.value = book
     } else if (modal.value === 'document' && currentBook.value) {
       const created = unwrap(
         await api.create(currentBook.value.id, kind.value, newTitle.value, templateChoice.value)
@@ -1323,23 +1488,6 @@ async function bookAction(action: 'exportBook' | 'backup' | 'import'): Promise<v
 }
 function keyboard(event: KeyboardEvent): void {
   if (event.defaultPrevented || event.isComposing) return
-  if (event.key === 'Tab') {
-    const dialog = activeDialog()
-    if (dialog) {
-      const candidates = dialogControls(dialog)
-      if (!dialog.contains(document.activeElement) || !candidates.length) {
-        event.preventDefault()
-        ;(event.shiftKey ? candidates.at(-1) : candidates[0])?.focus()
-      } else if (event.shiftKey && document.activeElement === candidates[0]) {
-        event.preventDefault()
-        candidates.at(-1)?.focus()
-      } else if (!event.shiftKey && document.activeElement === candidates.at(-1)) {
-        event.preventDefault()
-        candidates[0]?.focus()
-      }
-    }
-    return
-  }
   if (settingsOpen.value) return
   const dialogOpen = Boolean(
     modal.value ||
@@ -1373,6 +1521,26 @@ function keyboard(event: KeyboardEvent): void {
     return
   }
   if (dialogOpen) return
+  if (event.key === 'F11') {
+    event.preventDefault()
+    void toggleZen()
+    return
+  }
+  if (event.key === 'Escape' && zenActive) {
+    event.preventDefault()
+    void document.exitFullscreen()
+    return
+  }
+  if (event.key === 'Escape' && drawerOpen.value && !preferences.focusMode) {
+    drawerOpen.value = false
+    event.preventDefault()
+    return
+  }
+  if (event.key === 'Escape' && preferences.focusMode) {
+    setLayout('focus')
+    event.preventDefault()
+    return
+  }
   if (!(event.ctrlKey || event.metaKey) || !session.value) return
   const key = event.key.toLowerCase()
   if (key === 's') {
@@ -1401,11 +1569,12 @@ function navigationKeyboard(event: KeyboardEvent): void {
   }
 }
 onMounted(async () => {
+  document.addEventListener('fullscreenchange', fullscreenChanged)
   systemTheme.addEventListener('change', themeChanged)
   window.addEventListener('keydown', keyboard)
   window.addEventListener('keydown', navigationKeyboard, true)
   window.addEventListener('resize', onWindowResize)
-  window.addEventListener('focus', refreshFromDisk)
+  window.addEventListener('focus', focusRefresh)
   removeCloseListener = api.onClose(async () => {
     busy.value = true
     try {
@@ -1457,9 +1626,14 @@ onMounted(async () => {
     const boot = unwrap(await api.bootstrap())
     counters.enabled = boot.performanceEnabled === true
     if (counters.enabled)
-      Object.defineProperty(window, '__loomPerfSnapshot', {
+      Object.defineProperty(window, '__zestloomerPerfSnapshot', {
         configurable: true,
-        value: () => counters.snapshot()
+        value: () => ({
+          ...counters.snapshot(),
+          sessions: sessions.size,
+          sessionBytes: [...sessions.values()].reduce((sum, item) => sum + sessionBytes(item), 0),
+          editorStates: editorCache.size
+        })
       })
     books.value = boot.books
     Object.assign(preferences, boot.preferences)
@@ -1470,6 +1644,7 @@ onMounted(async () => {
   })
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', fullscreenChanged)
   window.removeEventListener('keydown', navigationKeyboard, true)
   systemTheme.removeEventListener('change', themeChanged)
   clearTimeout(statsTimer)
@@ -1481,73 +1656,57 @@ onBeforeUnmount(() => {
   removeCloseListener?.()
   window.removeEventListener('keydown', keyboard)
   window.removeEventListener('resize', onWindowResize)
-  window.removeEventListener('focus', refreshFromDisk)
+  window.removeEventListener('focus', focusRefresh)
   for (const item of sessions.values()) item.stop()
 })
 </script>
 
 <template>
-  <div
-    class="workspace"
-    :class="{ resizing, 'focus-mode': preferences.focusMode }"
-    :style="{ '--agent-width': agentWidth + 'px' }"
+  <WorkspaceShell
+    :modern="modernLayout"
+    :focus="preferences.focusMode"
+    :resizing="resizing"
+    :agent-width="agentWidth"
+    :class="{ 'explorer-overlay': listOverlay }"
+    :style="{
+      '--workspace-explorer': explorerWidth + 'px',
+      '--paper-width': writingOptions.paperWidth + 'px'
+    }"
   >
-    <nav v-show="!preferences.focusMode" class="sidebar" aria-label="创作分区">
-      <div class="brand">
-        <img class="brand-logo" :src="loomLogo" alt="Loom Logo" width="44" height="44" />
-        <div class="brand-name">Loom <span>织机</span></div>
-      </div>
-      <div class="book-controls">
-        <select
-          aria-label="当前作品"
-          :value="currentBook?.id || ''"
-          :disabled="busy"
-          @change="
-            guarded(() =>
-              switchBook(
-                books.find((book) => book.id === ($event.target as HTMLSelectElement).value)!
-              )
-            )
-          "
-        >
-          <option v-if="!currentBook" value="">尚未打开作品</option>
-          <option v-for="book in books" :key="book.id" :value="book.id">{{ book.title }}</option>
-        </select>
-        <div class="row">
-          <button :disabled="busy" @click="askNew('book')">新建作品</button
-          ><button :disabled="busy" @click="openBook">打开作品</button>
-        </div>
-        <div class="row book-tools">
-          <button :disabled="busy || !currentBook" @click="showQuickOpen">快速打开</button>
-          <button :disabled="busy" @click="showImport">导入</button>
-        </div>
-      </div>
-      <button
-        v-for="item in kinds"
-        :key="item"
-        :class="{ selected: kind === item }"
-        :disabled="busy || !currentBook"
-        :aria-current="kind === item ? 'page' : undefined"
-        @click="guarded(() => switchKind(item))"
-      >
-        {{ labels[item] }}
-        <span class="nav-count">{{
-          documents.filter((doc) => doc.kind === item && !doc.trashedAt).length || ''
-        }}</span>
-      </button>
-      <button class="agent-toggle" :aria-expanded="preferences.agentVisible" @click="toggleAgent">
-        Agent 对话 <span>{{ preferences.agentVisible ? '−' : '+' }}</span>
-      </button>
-      <div class="sidebar-bottom">
-        <button @click="openSettings()">设置</button><span>本地写作 · 自动保存</span>
-      </div>
-    </nav>
+    <WorkspaceNavigation
+      :modern="modernLayout"
+      :focus="preferences.focusMode"
+      :agent-visible="preferences.agentVisible"
+      :busy="busy"
+      :current-book="currentBook"
+      :books="books"
+      :kind="kind"
+      :documents="documents"
+      @book="(id) => guarded(() => switchBook(books.find((book) => book.id === id)!))"
+      @kind="(value) => guarded(() => switchKind(value))"
+      @new-book="askNew('book')"
+      @open-book="openBook"
+      @rename-book="askNew('renameBook')"
+      @quick-open="showQuickOpen"
+      @import="showImport"
+      @agent="toggleAgent"
+      @settings="openSettings()"
+    />
+    <button
+      v-if="modernLayout && listShown && listOverlay"
+      class="explorer-scrim"
+      aria-label="收起文档列表"
+      @click="toggleList"
+    />
     <section v-if="listShown" class="document-list" aria-label="文档列表">
       <header>
+        <button v-if="modernLayout && listOverlay" aria-label="关闭目录" @click="toggleList">
+          ×
+        </button>
         <button
           :disabled="busy || !currentBook"
           title="重新核对外部文件变化"
-          @click="refreshFromDisk"
+          @click="refreshFromDisk(true)"
         >
           刷新
         </button>
@@ -1578,23 +1737,27 @@ onBeforeUnmount(() => {
           }}</span>
         </button>
       </div>
-      <div v-if="orderable" class="list-actions">
+      <ActionMenu v-if="orderable" label="目录更多" class="list-actions">
         <button :disabled="busy || !activeDocuments.length" @click="showOrganizer">整理</button>
         <button :disabled="busy || !activeDocuments.length" @click="undoOrder">撤销排序</button>
         <button :disabled="busy || (!selectedIds.length && !current)" @click="showMoveDialog">
           移到…
         </button>
-      </div>
+      </ActionMenu>
       <div v-if="!inTrash && visibleDocuments.length" class="selection-actions">
         <label
           ><input
             type="checkbox"
-            :checked="visibleDocuments.every((doc) => selectedIds.includes(doc.id))"
+            :checked="
+              visibleDocuments
+                .filter((doc) => !doc.readonlyExample)
+                .every((doc) => selectedIds.includes(doc.id))
+            "
             :disabled="busy"
             aria-label="选择当前列表全部文档"
             @change="
               selectedIds = ($event.target as HTMLInputElement).checked
-                ? visibleDocuments.map((doc) => doc.id)
+                ? visibleDocuments.filter((doc) => !doc.readonlyExample).map((doc) => doc.id)
                 : []
             "
           />多选</label
@@ -1620,7 +1783,7 @@ onBeforeUnmount(() => {
           @dragend="dragId = ''"
         >
           <input
-            v-if="!inTrash"
+            v-if="!inTrash && !doc.readonlyExample"
             class="entry-select"
             type="checkbox"
             :checked="selectedIds.includes(doc.id)"
@@ -1672,163 +1835,367 @@ onBeforeUnmount(() => {
         清除筛选后可调整完整列表顺序。
       </p>
     </section>
+    <button
+      v-if="modernLayout && listShown"
+      class="explorer-resizer"
+      role="separator"
+      aria-label="调整目录宽度"
+      aria-orientation="vertical"
+      :aria-valuenow="explorerWidth"
+      :aria-valuemin="180"
+      :aria-valuemax="360"
+      @pointerdown="
+        (event) => {
+          if (event.button !== 0) return
+          explorerResizing = true
+          explorerStart = event.clientX
+          explorerInitial = explorerWidth
+          ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+        }
+      "
+      @pointermove="resizeExplorer"
+      @pointerup="explorerResizing = false"
+      @pointercancel="explorerResizing = false"
+      @lostpointercapture="explorerResizing = false"
+      @keydown="explorerKeyboard"
+    />
     <main class="writing-area">
       <header class="workspace-header">
         <div class="row">
+          <img
+            class="workspace-logo"
+            :src="zestloomerLogo"
+            alt="ZestLoomer"
+            width="28"
+            height="28"
+          />
           <button
+            v-if="!current || foreshadowTable"
             aria-label="切换文档列表"
-            :title="
-              agentShown && viewportWidth < 1180 ? '显示文档列表并收起 Agent' : '显示或收起文档列表'
-            "
             :aria-expanded="listShown"
             @click="toggleList"
           >
-            ☰</button
-          ><span
+            ☰
+          </button>
+          <ActionMenu v-if="modernLayout" label="作品菜单">
+            <select
+              aria-label="当前作品"
+              :value="currentBook?.id || ''"
+              :disabled="busy"
+              @change="
+                guarded(() =>
+                  switchBook(
+                    books.find((book) => book.id === ($event.target as HTMLSelectElement).value)!
+                  )
+                )
+              "
+            >
+              <option v-if="!currentBook" value="">尚未打开作品</option>
+              <option v-for="book in books" :key="book.id" :value="book.id">
+                {{ book.title }}
+              </option>
+            </select>
+            <button :disabled="busy" @click="askNew('book')">新建作品</button>
+            <button :disabled="busy" @click="openBook">打开作品</button>
+            <button :disabled="busy || !currentBook" @click="askNew('renameBook')">
+              修改作品名称
+            </button>
+            <button :disabled="busy || !currentBook" @click="showQuickOpen">快速打开</button>
+            <button :disabled="busy" @click="showImport">导入</button>
+            <button @click="modernLayout = false">经典布局</button>
+          </ActionMenu>
+          <span :title="current?.title"
             >{{ currentBook?.title || '写下你的故事' }}
-            <span class="muted"> / {{ labels[kind] }}{{ inTrash ? ' / 回收站' : '' }}</span></span
+            <span class="muted">
+              / {{ labels[kind] }}{{ inTrash ? ' / 回收站' : '' }} / {{ current?.title }}</span
+            ></span
           >
         </div>
         <div class="workspace-layout-actions">
+          <button
+            v-if="!modernLayout"
+            :aria-pressed="modernLayout"
+            @click="modernLayout = !modernLayout"
+          >
+            {{ modernLayout ? '经典布局' : '新布局' }}
+          </button>
+
           <span class="save-state" :class="current?.status" aria-live="polite">{{
             current ? status : ''
           }}</span>
-          <button :aria-pressed="preferences.focusMode" @click="setLayout('focus')">
+          <button
+            :aria-pressed="preferences.focusMode"
+            title="专注写作；F11 全屏禅意"
+            @click="zenActive ? toggleZen() : setLayout('focus')"
+          >
             {{ preferences.focusMode ? '退出专注' : '专注写作' }}
           </button>
-          <button :aria-pressed="agentShown" @click="setLayout('chat')">边写边聊</button>
+          <button :aria-pressed="agentShown" @click="toggleAgent">边写边聊</button>
         </div>
       </header>
       <div v-if="message" class="notice" role="status">
         <span>{{ message }}</span
         ><button aria-label="关闭提示" @click="message = ''">×</button>
       </div>
-      <template v-if="current">
-        <div class="document-heading">
-          <input
-            :value="current.title"
-            aria-label="文档标题"
-            :disabled="Boolean(current.document.trashedAt) || busy"
-            maxlength="200"
-            @input="editTitle"
-          />
-          <div class="row">
-            <button v-if="!current.document.trashedAt" :disabled="busy" @click="copyCurrent">
-              复制
-            </button>
-            <button :disabled="busy" @click="showHistory">历史版本</button>
-            <button :disabled="busy" @click="exportCurrent">导出</button
-            ><button v-if="!current.document.trashedAt" :disabled="busy" @click="modal = 'trash'">
-              移入回收站</button
-            ><button v-else class="primary" :disabled="busy" @click="restore">恢复文档</button>
-          </div>
-        </div>
-        <div class="document-navigation">
-          <div class="row">
-            <button :disabled="busy || !navigation.length" @click="returnToDocument">
-              返回原文
-            </button>
-            <template v-if="current.document.kind === 'chapters' && !current.document.trashedAt">
-              <button :disabled="busy || chapterIndex <= 0" @click="navigateChapter(-1)">
-                上一章
-              </button>
-              <button
-                :disabled="busy || chapterIndex < 0 || chapterIndex >= activeChapters.length - 1"
-                @click="navigateChapter(1)"
-              >
-                下一章
-              </button>
-            </template>
-          </div>
-          <label
-            v-if="current.document.kind === 'chapters' && !current.document.trashedAt"
-            class="chapter-target"
-            >章节目标
-            <input
-              v-model.number="bookPreferences.targetWords"
-              type="number"
-              min="0"
-              max="1000000"
-              aria-label="章节目标字数"
-              :disabled="busy"
-              @change="updateTargetWords"
-            />字
-            <progress
-              v-if="bookPreferences.targetWords > 0"
-              :value="targetProgress"
-              max="100"
-              :aria-label="'章节目标进度 ' + targetProgress + '%'"
-            /><span>{{
-              bookPreferences.targetWords > 0 ? targetProgress + '%' : '不设目标'
-            }}</span></label
-          >
-        </div>
-        <div class="editor-toolbar">
-          <div class="row">
-            <button :disabled="busy || Boolean(current.document.trashedAt)" @click="editor?.undo()">
-              撤销</button
-            ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
-              @click="editor?.redo()"
-            >
-              重做</button
-            ><span class="separator" /><button @click="editor?.search()">查找</button
-            ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
-              @click="editor?.replace()"
-            >
-              替换</button
-            ><button
-              :disabled="busy || Boolean(current.document.trashedAt)"
-              @click="referenceOpen = true"
-            >
-              插入引用
-            </button>
-            <button
-              v-if="kind === 'chapters'"
-              :aria-pressed="highlightEnabled"
-              title="人物名称与别名为黄色，设定名称与别名为绿色"
-              @click="toggleKnowledgeHighlight"
-            >
-              高亮人物与设定
-            </button>
-          </div>
-          <span class="muted">{{
-            kind === 'chapters' ? '纯文本 · 双换行 · 首行缩进两字' : 'Markdown 源码 · 不渲染'
-          }}</span>
-        </div>
+      <div v-if="kind === 'foreshadows' && currentBook" class="row foreshadow-navigation">
+        <button
+          v-if="foreshadowSource || inTrash"
+          @click="guarded(() => switchKind('foreshadows'))"
+        >
+          返回伏笔表格
+        </button>
+        <button v-else @click="guarded(() => switchKind('foreshadows', true))">回收站</button>
+      </div>
+      <StoryTools
+        v-if="currentBook && !inTrash && kind === 'foreshadows'"
+        v-show="!foreshadowSource || kind !== 'foreshadows'"
+        :key="currentBook.id"
+        ref="storyTools"
+        :book-id="currentBook.id"
+        :kind="kind"
+        :document-id="current?.document.id"
+        :documents="documents"
+        @open="(id) => guarded(() => openDocument(id))"
+        @source="
+          (id) =>
+            guarded(async () => {
+              if (!(await flushCurrent())) return
+              await openDocument(id)
+              foreshadowSource = true
+            })
+        "
+        @saved="
+          (id) =>
+            guarded(async () => {
+              await reloadList()
+              if (current?.document.id === id) await openDocument(id, false)
+            })
+        "
+      />
+      <template v-if="current && !foreshadowTable">
         <div v-if="currentError" class="notice error" role="alert">
           <span>{{ currentError }}</span
           ><button v-if="current.status === 'conflict'" @click="compareDisk">比较磁盘版本</button
           ><button v-else @click="flushCurrent">重试保存</button>
         </div>
+        <div v-if="current.document.readonlyExample" class="notice">
+          只读填写示例，不属于本书事实。可复制为普通资料后编辑。
+        </div>
         <div v-if="current.document.trashedAt" class="trash-banner">
           此文档已移入回收站，引用仍有效。恢复后可继续编辑。
+          <button class="primary" :disabled="busy" @click="restore">恢复文档</button>
         </div>
         <TextEditor
           ref="editor"
           :session="current"
+          :modern="modernLayout"
+          :paper-width="writingOptions.paperWidth"
+          :typewriter="writingOptions.typewriter"
+          :chinese-pairs="writingOptions.chinesePairs"
           :preferences="preferences"
           :tick="tick"
-          :locked="busy"
+          :locked="busy || Boolean(current.document.readonlyExample)"
           :knowledge-entries="highlightEntries"
           :highlight-enabled="highlightEnabled"
           @save="flushCurrent"
           @reference="referenceJump"
           @selection="selectedText = $event"
           @agent-send="sendAgentFromEditor"
-        />
+        >
+          <template #heading>
+            <div class="document-heading">
+              <input
+                :value="current.title"
+                aria-label="文档标题"
+                :disabled="
+                  Boolean(current.document.trashedAt || current.document.readonlyExample) || busy
+                "
+                maxlength="200"
+                @input="editTitle"
+              />
+            </div>
+          </template>
+          <template #tools>
+            <button
+              v-if="!foreshadowTable"
+              class="document-list-toggle"
+              aria-label="切换文档列表"
+              :title="'显示或收起文档列表'"
+              :aria-expanded="listShown"
+              @click="toggleList"
+            >
+              ☰
+            </button>
+
+            <div class="editor-toolbar" :class="{ 'auto-tools': !writingOptions.pinTools }">
+              <div class="row">
+                <button
+                  :disabled="
+                    busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+                  "
+                  @click="editor?.undo()"
+                >
+                  撤销</button
+                ><button
+                  :disabled="
+                    busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+                  "
+                  @click="editor?.redo()"
+                >
+                  重做</button
+                ><span class="separator" /><button @click="editor?.search()">查找</button
+                ><button
+                  :disabled="
+                    busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+                  "
+                  @click="editor?.replace()"
+                >
+                  替换</button
+                ><button
+                  :disabled="
+                    busy || Boolean(current.document.trashedAt || current.document.readonlyExample)
+                  "
+                  @click="referenceOpen = true"
+                >
+                  插入引用
+                </button>
+                <button
+                  v-if="kind === 'chapters'"
+                  :aria-pressed="highlightEnabled"
+                  title="人物名称与别名为黄色，设定名称与别名为绿色"
+                  @click="toggleKnowledgeHighlight"
+                >
+                  高亮人物与设定
+                </button>
+              </div>
+            </div>
+          </template>
+        </TextEditor>
         <footer>
-          <span
-            >{{ wordCount.toLocaleString() }} 字{{
-              selectedText ? ' · 已选 ' + Array.from(selectedText).length + ' 字符' : ''
-            }}
-            · 全书 {{ totalWords.toLocaleString() }} 字</span
-          ><span>Ctrl+S 保存 · Ctrl+F 查找 · Ctrl+点击引用跳转</span>
+          <div class="footer-controls">
+            <ActionMenu label="文档更多">
+              <button v-if="!current.document.trashedAt" :disabled="busy" @click="copyCurrent">
+                复制
+              </button>
+              <button
+                :disabled="busy || Boolean(current.document.readonlyExample)"
+                @click="showHistory"
+              >
+                历史版本
+              </button>
+              <button :disabled="busy" @click="exportCurrent">导出</button
+              ><button
+                v-if="!current.document.trashedAt"
+                :disabled="busy || Boolean(current.document.readonlyExample)"
+                @click="modal = 'trash'"
+              >
+                移入回收站
+              </button>
+            </ActionMenu>
+            <ActionMenu label="章节与目标" keep-open>
+              <div class="row">
+                <button :disabled="busy || !navigation.length" @click="returnToDocument">
+                  返回原文
+                </button>
+                <template
+                  v-if="current.document.kind === 'chapters' && !current.document.trashedAt"
+                >
+                  <button :disabled="busy || chapterIndex <= 0" @click="navigateChapter(-1)">
+                    上一章
+                  </button>
+                  <button
+                    :disabled="
+                      busy || chapterIndex < 0 || chapterIndex >= activeChapters.length - 1
+                    "
+                    @click="navigateChapter(1)"
+                  >
+                    下一章
+                  </button>
+                </template>
+              </div>
+              <label
+                v-if="current.document.kind === 'chapters' && !current.document.trashedAt"
+                class="chapter-target"
+                >章节目标
+                <input
+                  v-model.number="bookPreferences.targetWords"
+                  type="number"
+                  min="0"
+                  max="1000000"
+                  aria-label="章节目标字数"
+                  :disabled="busy"
+                  @change="updateTargetWords"
+                />字
+              </label>
+            </ActionMenu>
+
+            <ActionMenu label="写作显示" keep-open>
+              <label><input v-model="writingOptions.typewriter" type="checkbox" />打字机模式</label>
+              <label
+                ><input v-model="writingOptions.chinesePairs" type="checkbox" />中文选区配对</label
+              >
+              <label><input v-model="writingOptions.pinTools" type="checkbox" />始终显示工具</label>
+              <label
+                >版心宽度
+                <select v-model.number="writingOptions.paperWidth" aria-label="版心宽度">
+                  <option :value="680">680</option>
+                  <option :value="820">820</option>
+                  <option :value="960">960</option>
+                </select></label
+              >
+            </ActionMenu>
+            <div id="relationship-controls">
+              <StoryTools
+                v-if="currentBook && !inTrash && kind !== 'foreshadows'"
+                :key="currentBook.id"
+                ref="storyTools"
+                :book-id="currentBook.id"
+                :kind="kind"
+                :document-id="current?.document.id"
+                :documents="documents"
+                @open="(id) => guarded(() => openDocument(id))"
+                @source="
+                  (id) =>
+                    guarded(async () => {
+                      if (!(await flushCurrent())) return
+                      await openDocument(id)
+                      foreshadowSource = true
+                    })
+                "
+                @saved="
+                  (id) =>
+                    guarded(async () => {
+                      await reloadList()
+                      if (current?.document.id === id) await openDocument(id, false)
+                    })
+                "
+              />
+            </div>
+          </div>
+          <div class="footer-statistics">
+            <div id="relationship-status" />
+            <span>全书 {{ totalWords.toLocaleString() }} 字</span>
+            <span
+              >{{ current.document.kind === 'chapters' ? '本章' : '本文' }}
+              {{ wordCount.toLocaleString() }} 字</span
+            >
+            <span v-if="current.document.kind === 'chapters'" class="footer-target">
+              <template v-if="bookPreferences.targetWords > 0">
+                <span>{{ targetProgress }}%</span>
+                <progress
+                  :value="targetProgress"
+                  max="100"
+                  :aria-label="'章节目标进度 ' + targetProgress + '%'"
+                />
+              </template>
+              <span v-else>未设目标</span>
+            </span>
+            <span v-if="selectedText">已选 {{ Array.from(selectedText).length }} 字符</span>
+          </div>
         </footer>
       </template>
-      <section v-else class="empty">
-        <span class="eyebrow">LOOM / {{ labels[kind] }}</span>
+      <section v-else-if="!foreshadowTable || !currentBook" class="empty">
+        <span class="eyebrow">ZestLoomer / {{ labels[kind] }}</span>
         <h1>
           {{
             currentBook ? (inTrash ? '每一个想法都可以找回' : '留一页给新的想法') : '从一部作品开始'
@@ -1898,222 +2265,248 @@ onBeforeUnmount(() => {
       @settings="openSettings('ai')"
     />
 
-    <div v-if="modal" class="modal-backdrop" @keydown.esc="!busy && (modal = null)">
-      <form
-        class="dialog"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="
-          modal === 'trash' ? '移入回收站确认' : modal === 'book' ? '新建作品' : '新建条目'
-        "
-        @submit.prevent="submitModal"
-      >
-        <h2>
-          {{
+    <OverlayHost>
+      <div v-if="modal" class="modal-backdrop" @keydown.esc="!busy && (modal = null)">
+        <form
+          class="dialog"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="
             modal === 'trash'
-              ? '移入回收站？'
-              : modal === 'book'
-                ? '新建作品'
-                : '新建' + labels[kind]
-          }}
-        </h2>
-        <template v-if="modal === 'trash'"
-          ><p>
-            「{{ current?.title }}」将从正常列表移出。已有引用仍可打开它，也可以随时恢复。
-          </p></template
-        ><template v-else
-          ><label
-            >标题<input
-              ref="modalInput"
-              v-model="newTitle"
-              aria-label="新标题"
-              maxlength="200"
+              ? '移入回收站确认'
+              : modal === 'renameBook'
+                ? '修改作品名称'
+                : modal === 'book'
+                  ? '新建作品'
+                  : '新建条目'
+          "
+          @submit.prevent="submitModal"
+        >
+          <h2>
+            {{
+              modal === 'trash'
+                ? '移入回收站？'
+                : modal === 'book'
+                  ? '新建作品'
+                  : modal === 'renameBook'
+                    ? '修改作品名称'
+                    : '新建' + labels[kind]
+            }}
+          </h2>
+          <template v-if="modal === 'trash'"
+            ><p>
+              「{{ current?.title }}」将从正常列表移出。已有引用仍可打开它，也可以随时恢复。
+            </p></template
+          ><template v-else
+            ><label
+              >标题<input
+                ref="modalInput"
+                v-model="newTitle"
+                aria-label="新标题"
+                maxlength="200"
+                :disabled="busy"
+                required
+            /></label>
+            <p v-if="modal === 'book'" class="muted">
+              接下来选择保存位置，软件会建立独立作品文件夹。
+            </p>
+            <label v-if="modal === 'document' && ['characters', 'settings'].includes(kind)">
+              初始内容<select v-model="templateChoice" aria-label="初始内容" :disabled="busy">
+                <option value="basic">基础模板</option>
+                <option value="blank">空白文档</option>
+              </select>
+            </label>
+            <p
+              v-if="modal === 'document' && ['characters', 'settings'].includes(kind)"
+              class="muted"
+            >
+              区块可以自由删改。尚未确定的构想建议放在速记。
+            </p></template
+          >
+          <p v-if="message" class="error-text">{{ message }}</p>
+          <div class="dialog-actions">
+            <button type="button" :disabled="busy" @click="modal = null">取消</button
+            ><button
+              class="primary"
+              :disabled="busy || (modal !== 'trash' && !newTitle.trim())"
+              type="submit"
+            >
+              {{ modal === 'trash' ? '确认回收' : modal === 'renameBook' ? '保存' : '创建' }}
+            </button>
+          </div>
+        </form>
+      </div>
+      <LazyDialog
+        v-if="chapterCreateOpen"
+        :loader="loadChapterCreateDialog"
+        :documents="activeChapters"
+        :current-id="current?.document.trashedAt ? undefined : current?.document.id"
+        :preferences="bookPreferences"
+        :busy="busy"
+        :error="message"
+        @close="chapterCreateOpen = false"
+        @submit="createChapters"
+      />
+      <LazyDialog
+        v-if="organizeOpen"
+        :loader="loadChapterOrganizeDialog"
+        :documents="organizeDocuments"
+        :kind="kind"
+        :busy="busy"
+        :error="message"
+        @close="organizeOpen = false"
+        @apply-order="applyOrder"
+        @apply-names="applyNames"
+      />
+      <LazyDialog
+        v-if="quickOpen && currentBook"
+        :loader="loadQuickOpenDialog"
+        :book-id="currentBook.id"
+        :documents="documents"
+        :busy="busy"
+        @close="quickOpen = false"
+        @open="quickNavigate"
+      />
+      <LazyDialog
+        v-if="importOpen"
+        :loader="loadImportDialog"
+        :busy="busy"
+        :has-book="Boolean(currentBook)"
+        :error="message"
+        @close="importOpen = false"
+        @submit="importDocuments"
+      />
+      <LazyDialog
+        v-if="historyOpen && current"
+        :loader="loadHistoryDialog"
+        :book-id="current.bookId"
+        :document="current.document"
+        :busy="busy"
+        :error="message"
+        @close="historyOpen = false"
+        @restore="restoreHistory"
+      />
+      <div v-if="moveDialog" class="modal-backdrop" @keydown.esc="!busy && (moveDialog = false)">
+        <form
+          class="dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="移到指定位置"
+          @submit.prevent="
+            moveIds(
+              selectedIds.length ? selectedIds : current ? [current.document.id] : [],
+              movePosition
+            )
+          "
+        >
+          <h2>移到指定位置</h2>
+          <p>
+            移动{{
+              selectedIds.length ? '选中的 ' + selectedIds.length + ' 项' : '当前文档'
+            }}，保留名称和正文。
+          </p>
+          <label
+            >移动后从第几项开始
+            <input
+              v-model.number="movePosition"
+              type="number"
+              min="1"
+              :max="activeDocuments.length"
+              aria-label="目标位置"
               :disabled="busy"
               required
           /></label>
-          <p v-if="modal === 'book'" class="muted">
-            接下来选择保存位置，软件会建立独立作品文件夹。
-          </p>
-          <label v-if="modal === 'document' && ['characters', 'settings'].includes(kind)">
-            初始内容<select v-model="templateChoice" aria-label="初始内容" :disabled="busy">
-              <option value="basic">基础模板</option>
-              <option value="blank">空白文档</option>
-            </select>
-          </label>
-          <p v-if="modal === 'document' && ['characters', 'settings'].includes(kind)" class="muted">
-            区块可以自由删改。尚未确定的构想建议放在速记。
-          </p></template
-        >
-        <p v-if="message" class="error-text">{{ message }}</p>
-        <div class="dialog-actions">
-          <button type="button" :disabled="busy" @click="modal = null">取消</button
-          ><button
-            class="primary"
-            :disabled="busy || (modal !== 'trash' && !newTitle.trim())"
-            type="submit"
-          >
-            {{ modal === 'trash' ? '确认回收' : '创建' }}
-          </button>
-        </div>
-      </form>
-    </div>
-    <ChapterCreateDialog
-      v-if="chapterCreateOpen"
-      :documents="activeChapters"
-      :current-id="current?.document.trashedAt ? undefined : current?.document.id"
-      :preferences="bookPreferences"
-      :busy="busy"
-      :error="message"
-      @close="chapterCreateOpen = false"
-      @submit="createChapters"
-    />
-    <ChapterOrganizeDialog
-      v-if="organizeOpen"
-      :documents="organizeDocuments"
-      :kind="kind"
-      :busy="busy"
-      :error="message"
-      @close="organizeOpen = false"
-      @apply-order="applyOrder"
-      @apply-names="applyNames"
-    />
-    <QuickOpenDialog
-      v-if="quickOpen && currentBook"
-      :book-id="currentBook.id"
-      :documents="documents"
-      :busy="busy"
-      @close="quickOpen = false"
-      @open="quickNavigate"
-    />
-    <ImportDialog
-      v-if="importOpen"
-      :busy="busy"
-      :has-book="Boolean(currentBook)"
-      :error="message"
-      @close="importOpen = false"
-      @submit="importDocuments"
-    />
-    <HistoryDialog
-      v-if="historyOpen && current"
-      :book-id="current.bookId"
-      :document="current.document"
-      :busy="busy"
-      :error="message"
-      @close="historyOpen = false"
-      @restore="restoreHistory"
-    />
-    <div v-if="moveDialog" class="modal-backdrop" @keydown.esc="!busy && (moveDialog = false)">
-      <form
-        class="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="移到指定位置"
-        @submit.prevent="
-          moveIds(
-            selectedIds.length ? selectedIds : current ? [current.document.id] : [],
-            movePosition
-          )
-        "
+          <p v-if="message" class="error-text" role="alert">{{ message }}</p>
+          <div class="dialog-actions">
+            <button type="button" :disabled="busy" @click="moveDialog = false">取消</button
+            ><button type="button" :disabled="busy" @click="movePosition = 1">开头</button
+            ><button type="button" :disabled="busy" @click="movePosition = activeDocuments.length">
+              末尾</button
+            ><button class="primary" :disabled="busy">移动</button>
+          </div>
+        </form>
+      </div>
+      <div
+        v-if="bulkTrashOpen"
+        class="modal-backdrop"
+        @keydown.esc="!busy && (bulkTrashOpen = false)"
       >
-        <h2>移到指定位置</h2>
-        <p>
-          移动{{
-            selectedIds.length ? '选中的 ' + selectedIds.length + ' 项' : '当前文档'
-          }}，保留名称和正文。
-        </p>
-        <label
-          >移动后从第几项开始
-          <input
-            v-model.number="movePosition"
-            type="number"
-            min="1"
-            :max="activeDocuments.length"
-            aria-label="目标位置"
-            :disabled="busy"
-            required
-        /></label>
-        <p v-if="message" class="error-text" role="alert">{{ message }}</p>
-        <div class="dialog-actions">
-          <button type="button" :disabled="busy" @click="moveDialog = false">取消</button
-          ><button type="button" :disabled="busy" @click="movePosition = 1">开头</button
-          ><button type="button" :disabled="busy" @click="movePosition = activeDocuments.length">
-            末尾</button
-          ><button class="primary" :disabled="busy">移动</button>
-        </div>
-      </form>
-    </div>
-    <div
-      v-if="bulkTrashOpen"
-      class="modal-backdrop"
-      @keydown.esc="!busy && (bulkTrashOpen = false)"
-    >
-      <section class="dialog" role="dialog" aria-modal="true" aria-label="批量回收确认">
-        <h2>回收 {{ selectedIds.length }} 个文档？</h2>
-        <p>选中文档将移入各自回收站，可以恢复。</p>
-        <ul class="bulk-preview">
-          <li v-for="id in selectedIds" :key="id">
-            {{ documents.find((doc) => doc.id === id)?.title }}
-          </li>
-        </ul>
-        <div class="dialog-actions">
-          <button :disabled="busy" @click="bulkTrashOpen = false">取消</button
-          ><button class="primary" :disabled="busy" @click="trashSelected">确认回收所选文档</button>
-        </div>
-      </section>
-    </div>
-    <SettingsCenter
-      v-if="settingsOpen"
-      :initial-section="settingsSection"
-      :preferences="preferences"
-      :config="agentConfig"
-      :tool-config="toolApiConfig"
-      :has-book="Boolean(currentBook)"
-      :busy="busy"
-      :agent-running="Boolean(agentSnapshot.active)"
-      :book-message="message"
-      @close="settingsOpen = false"
-      @configured="agentConfig = $event"
-      @tool-configured="toolApiConfig = $event"
-      @appearance="Object.assign(preferences, $event)"
-      @book-action="bookAction"
-    />
-    <div v-if="referenceOpen" class="modal-backdrop" @keydown.esc="referenceOpen = false">
-      <section class="dialog" role="dialog" aria-modal="true" aria-label="插入文档引用">
-        <h2>插入引用</h2>
-        <input v-model="referenceQuery" placeholder="筛选引用标题" aria-label="筛选引用标题" />
-        <div class="reference-list">
-          <button v-for="doc in references" :key="doc.id" @click="insertReference(doc)">
-            {{ doc.title }}
-            <small>{{ labels[doc.kind] }}{{ doc.trashedAt ? ' · 已回收' : '' }}</small>
-          </button>
-        </div>
-        <div class="dialog-actions"><button @click="referenceOpen = false">取消</button></div>
-      </section>
-    </div>
-    <div v-if="conflict" class="modal-backdrop">
-      <section class="dialog conflict-dialog" role="dialog" aria-modal="true" aria-label="比较版本">
-        <h2>保留哪份内容？</h2>
-        <p>当前输入保持完整。请选择以磁盘版本继续，或明确将当前输入保存为新版本。</p>
-        <div class="comparison">
-          <label
-            >当前输入：{{ current?.title }}<textarea :value="current?.content" readonly /></label
-          ><label
-            >磁盘版本：{{ conflict.title }}{{ conflict.trashedAt ? '（已回收）' : ''
-            }}<textarea :value="conflict.content" readonly />
-          </label>
-        </div>
-        <div class="dialog-actions">
-          <button :disabled="busy" @click="conflict = null">稍后处理</button
-          ><button :disabled="busy" @click="resolveConflict(false)">采用磁盘版本</button
-          ><button
-            class="primary"
-            :disabled="busy || Boolean(conflict.trashedAt)"
-            @click="resolveConflict(true)"
-          >
-            保存当前输入
-          </button>
-        </div>
-      </section>
-    </div>
-  </div>
+        <section class="dialog" role="dialog" aria-modal="true" aria-label="批量回收确认">
+          <h2>回收 {{ selectedIds.length }} 个文档？</h2>
+          <p>选中文档将移入各自回收站，可以恢复。</p>
+          <ul class="bulk-preview">
+            <li v-for="id in selectedIds" :key="id">
+              {{ documents.find((doc) => doc.id === id)?.title }}
+            </li>
+          </ul>
+          <div class="dialog-actions">
+            <button :disabled="busy" @click="bulkTrashOpen = false">取消</button
+            ><button class="primary" :disabled="busy" @click="trashSelected">
+              确认回收所选文档
+            </button>
+          </div>
+        </section>
+      </div>
+      <LazyDialog
+        v-if="settingsOpen"
+        :loader="loadSettingsCenter"
+        :initial-section="settingsSection"
+        :preferences="preferences"
+        :config="agentConfig"
+        :tool-config="toolApiConfig"
+        :has-book="Boolean(currentBook)"
+        :busy="busy"
+        :agent-running="Boolean(agentSnapshot.active)"
+        :book-message="message"
+        @close="settingsOpen = false"
+        @configured="agentConfig = $event"
+        @tool-configured="toolApiConfig = $event"
+        @appearance="Object.assign(preferences, $event)"
+        @book-action="bookAction"
+      />
+      <div v-if="referenceOpen" class="modal-backdrop" @keydown.esc="referenceOpen = false">
+        <section class="dialog" role="dialog" aria-modal="true" aria-label="插入文档引用">
+          <h2>插入引用</h2>
+          <input v-model="referenceQuery" placeholder="筛选引用标题" aria-label="筛选引用标题" />
+          <div class="reference-list">
+            <button v-for="doc in references" :key="doc.id" @click="insertReference(doc)">
+              {{ doc.title }}
+              <small>{{ labels[doc.kind] }}{{ doc.trashedAt ? ' · 已回收' : '' }}</small>
+            </button>
+          </div>
+          <div class="dialog-actions"><button @click="referenceOpen = false">取消</button></div>
+        </section>
+      </div>
+      <div v-if="conflict" class="modal-backdrop">
+        <section
+          class="dialog conflict-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="比较版本"
+        >
+          <h2>保留哪份内容？</h2>
+          <p>当前输入保持完整。请选择以磁盘版本继续，或明确将当前输入保存为新版本。</p>
+          <div class="comparison">
+            <label
+              >当前输入：{{ current?.title }}<textarea :value="current?.content" readonly /></label
+            ><label
+              >磁盘版本：{{ conflict.title }}{{ conflict.trashedAt ? '（已回收）' : ''
+              }}<textarea :value="conflict.content" readonly />
+            </label>
+          </div>
+          <div class="dialog-actions">
+            <button :disabled="busy" @click="conflict = null">稍后处理</button
+            ><button :disabled="busy" @click="resolveConflict(false)">采用磁盘版本</button
+            ><button
+              class="primary"
+              :disabled="busy || Boolean(conflict.trashedAt)"
+              @click="resolveConflict(true)"
+            >
+              保存当前输入
+            </button>
+          </div>
+        </section>
+      </div>
+    </OverlayHost>
+  </WorkspaceShell>
 </template>

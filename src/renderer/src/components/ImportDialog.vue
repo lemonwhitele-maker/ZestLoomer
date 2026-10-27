@@ -2,10 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { labels, kinds, unwrap, type DocumentKind } from '../../../shared/documents'
 import { parseTextImport, type ImportAPI, type ImportDraft } from '../../../shared/imports'
+import { countWords } from '../../../shared/wordCount'
 
 const props = defineProps<{ busy: boolean; hasBook: boolean; error?: string }>()
 const emit = defineEmits<{ close: []; submit: [draft: ImportDraft, newBookTitle?: string] }>()
-const api = (window.loom as typeof window.loom & { imports: ImportAPI }).imports
+const api = (window.zestloomer as typeof window.zestloomer & { imports: ImportAPI }).imports
 const encoding = ref<'utf8' | 'gb18030'>('utf8')
 const loading = ref(false)
 const dialog = ref<HTMLElement>()
@@ -19,6 +20,7 @@ const destination = ref<'current' | 'new'>(props.hasBook ? 'current' : 'new')
 const bookTitle = ref('')
 const selectedCount = computed(() => selected.value.length)
 const preview = computed(() => draft.value?.items[previewIndex.value])
+const itemWords = computed(() => draft.value?.items.map((item) => countWords(item.content)) || [])
 const locked = computed(() => props.busy || loading.value)
 const allSelected = computed(
   () => Boolean(draft.value?.items.length) && selected.value.length === draft.value!.items.length
@@ -166,10 +168,7 @@ function submit(): void {
               />
               <button class="item-name" :disabled="locked" @click="previewIndex = index">
                 <span>{{ item.title }}</span
-                ><small
-                  >{{ labels[item.kind] }} ·
-                  {{ Array.from(item.content.replace(/\s/g, '')).length }} 字</small
-                >
+                ><small>{{ labels[item.kind] }} · {{ itemWords[index] }} 字</small>
               </button>
             </div>
           </section>
