@@ -1,8 +1,10 @@
 # ZestLoomer
 
-本地小说写作工作区，把正文、大纲、人物、设定、速记与 AI 对话放在一起。可以直接写作，也可以让 Agent 查阅书内资料、讨论情节并提出修改；正式修改由作者审阅确认。
+ZestLoomer（原名 Loom）是一款本地小说写作软件与 AI 协作工作区，把正文、大纲、人物、设定、速记与 AI 对话放在一起。可以直接写作，也可以让 Agent 查阅书内资料、讨论情节并提出修改；正式修改由作者审阅确认。
 
-当前为 **`0.1.0-beta.3` · Windows x64 预览版（2026-10-28）**，汇总本轮功能迭代与新版界面。下载见 [GitHub Releases](https://github.com/lemonwhitele-maker/ZestLoomer/releases/tag/v0.1.0-beta.3)。未配置 AI 时仍可使用本地写作。
+ZestLoomer is a local novel-writing desktop workspace with AI collaboration. Keep manuscripts, outlines, characters, worldbuilding notes, and AI conversations together; review proposed edits before applying them.
+
+当前为 **`0.1.0-beta.3` · Windows x64 预览版（2026-10-28）**，汇总本轮功能迭代与新版界面。[下载 Windows x64 预览版](https://github.com/lemonwhitele-maker/ZestLoomer/releases/tag/v0.1.0-beta.3)。未配置 AI 时仍可使用本地写作。
 
 ## 相对旧版的功能迭代
 
